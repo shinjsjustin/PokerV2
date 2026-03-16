@@ -114,6 +114,12 @@ class GameSocketManager {
     emitToSocket(socket, eventType, data) {
         socket.emit(eventType, data);
     }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // Listeners ..?
+    // ═══════════════════════════════════════════════════════════════════
+
+
 }
 
 // Export singleton instance

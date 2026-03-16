@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Poker Game</title>
+  <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+  <link rel="stylesheet" href="../css/game.css" />
+</head>
+<body x-data="pokerGame()" 
+      :data-table-id="tableId" 
+      :data-player-id="myPlayerId" 
+      :data-player-seat="myPlayer?.seat_number">>
+
+  <div class="game-wrap">
+    <!-- Header -->
+    <div class="game-header">
+      <a href="home.html" class="back-btn">← Back</a>
+      <div class="user-info" x-show="user">
+        <strong x-text="user?.username || 'Player'"></strong> • 
+        <span x-text="(user?.chip_balance || 0).toLocaleString()"></span> chips
+      </div>
+    </div>
+
+    <!-- Loading State -->
+    <div x-show="loading" class="loading-state">
+      <div>Loading game...</div>
+    </div>
+
+    <!-- Error State -->
+    <div x-show="error && !loading" class="error-state">
+      <div x-text="error"></div>
+      <button class="retry-btn" @click="reloadGame">Retry</button>
+    </div>
+
+    <!-- Game Content -->
+    <div x-show="!loading && !error && game">
+
+      <!-- ① Game state: stage + community cards + pot -->
+      <div class="section">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+          <div class="label" style="margin-bottom:0;" x-text="game?.tableName || 'Poker Game'"></div>
+          <div style="font-size:11px; color:var(--text-muted);" x-show="game">
+            Blinds <span x-text="game.smallBlind"></span>/<span x-text="game.bigBlind"></span>
+            &nbsp;·&nbsp;
+            <span x-text="game.players?.length || 0"></span> players
+          </div>
+        </div>
+
+        <div class="stage-bar">
+          <template x-for="s in stages" :key="s">
+            <span class="stage-pill" :class="{ active: game?.stage === s }" x-text="s.replace('_', '-')"></span>
+          </template>
+        </div>
+
+        <div class="community">
+          <template x-for="(card, i) in communityDisplay" :key="i">
+            <div class="card" :class="card.color">
+              <template x-if="!card.faceDown">
+                <span class="rank" x-text="card.rank"></span>
+              </template>
+              <template x-if="!card.faceDown">
+                <span class="suit" x-text="card.suit"></span>
+              </template>
+              <template x-if="card.faceDown">
+                <span class="dot">·</span>
+              </template>
+            </div>
+          </template>
+        </div>
+
+        <!-- Main pot (or multiple pots if side pots exist) -->
+        <template x-if="game?.pot">
+          <div class="pot-line">
+            <span class="pot-label">pot</span>
+            <span class="pot-amount" x-text="(game.pot || 0).toLocaleString() + ' chips'"></span>
+          </div>
+        </template>
+      </div>
+
+      <!-- ② Player list -->
+      <div class="section" x-show="game?.players?.length > 0">
+        <div class="label">players</div>
+        <div class="players-list">
+          <template x-for="p in game.players" :key="p.player_id">
+            <div class="player-row"
+                 :class="{
+                   'is-turn':   p.player_id === game.activePlayerId,
+                   'is-folded': p.is_folded,
+                   'is-allin':  p.is_all_in && !p.is_folded
+                 }">
+
+              <div class="avatar" x-text="initials(p.username)"></div>
+
+              <div class="player-meta">
+                <div class="player-name">
+                  <span x-text="p.username"></span>
+                  <span class="badge badge-d"  x-show="p.seat_number === game.dealerSeat">D</span>
+                  <span class="badge badge-sb" x-show="p.seat_number === game.sbSeat">SB</span>
+                  <span class="badge badge-bb" x-show="p.seat_number === game.bbSeat">BB</span>
+                  <span class="badge badge-ai" x-show="p.is_all_in && !p.is_folded">all-in</span>
+                </div>
+                <div class="player-chips" x-text="(p.chips_end || p.chips_start || 0).toLocaleString() + ' chips'"></div>
+              </div>
+
+              <!-- Their hole cards (face-down unless showdown or it's you) -->
+              <div class="player-cards" x-show="!p.is_folded">
+                <template x-if="p.hole_cards && p.hole_cards.length && (p.player_id === myPlayerId || game.stage === 'showdown')">
+                  <template x-for="card in parseCards(p.hole_cards)" :key="card.raw">
+                    <div class="sm-card" :class="card.color">
+                      <span class="rank" x-text="card.rank"></span>
+                      <span class="suit" x-text="card.suit"></span>
+                    </div>
+                  </template>
+                </template>
+                <template x-if="!p.hole_cards || !p.hole_cards.length || (p.player_id !== myPlayerId && game.stage !== 'showdown')">
+                  <div style="display:flex;gap:3px;">
+                    <div class="sm-card face-down"></div>
+                    <div class="sm-card face-down"></div>
+                  </div>
+                </template>
+              </div>
+
+              <!-- Current bet this round -->
+              <div class="player-bet" x-show="p.current_bet > 0" x-text="p.current_bet"></div>
+              <div class="status-text" x-show="p.is_folded">folded</div>
+            </div>
+          </template>
+        </div>
+      </div>
+
+      <!-- ③ Your hand (only shown when you're in the hand) -->
+      <div class="section" x-show="myPlayer && !myPlayer.is_folded">
+        <div class="label">your hand</div>
+        <div class="hand-row">
+          <template x-if="myPlayer?.hole_cards">
+            <template x-for="card in parseCards(myPlayer.hole_cards)" :key="card.raw">
+              <div class="big-card" :class="card.color">
+                <span class="rank" x-text="card.rank"></span>
+                <span class="suit" x-text="card.suit"></span>
+              </div>
+            </template>
+          </template>
+          <div class="hand-info" x-show="myHandLabel">
+            <strong x-text="myHandLabel"></strong>
+          </div>
+        </div>
+        <template x-if="myPlayer">
+          <div class="bet-summary">
+            <span>current bet: <strong x-text="myPlayer.current_bet || 0"></strong></span>
+            <span>to call: <strong x-text="toCall"></strong></span>
+            <span>stack: <strong x-text="(myPlayer.chips_end || myPlayer.chips_start || 0).toLocaleString()"></strong></span>
+          </div>
+        </template>
+      </div>
+
+      <!-- ④ Action panel (only when it's your turn) -->
+      <div class="section" x-show="isMyTurn && !actionDisabled">
+        <div class="label">your action</div>
+        <div class="action-buttons">
+          <button class="btn btn-fold" @click="act('fold')" :disabled="actionInProgress">fold</button>
+          <button class="btn btn-call"
+                  x-text="toCall === 0 ? 'check' : 'call ' + toCall"
+                  @click="act(toCall === 0 ? 'check' : 'call')" 
+                  :disabled="actionInProgress"></button>
+          <button class="btn btn-raise" @click="toggleRaise" :disabled="actionInProgress || !canRaise">
+            <span x-text="showRaise ? 'cancel' : 'raise'"></span>
+          </button>
+        </div>
+
+        <div class="raise-row" x-show="showRaise">
+          <label>raise to</label>
+          <input type="range"
+                 :min="minRaise"
+                 :max="myPlayer ? (myPlayer.chips_end || myPlayer.chips_start || 0) : 0"
+                 x-model.number="raiseAmount"
+                 step="10" />
+          <input type="number"
+                 :min="minRaise"
+                 :max="myPlayer ? (myPlayer.chips_end || myPlayer.chips_start || 0) : 0"
+                 x-model.number="raiseAmount"
+                 step="10" />
+          <button class="raise-confirm" @click="act('raise')" :disabled="actionInProgress">confirm ↑</button>
+        </div>
+
+        <!-- Turn timer -->
+        <div class="timer-bar" x-show="game.turnTimeSeconds > 0">
+          <div class="timer-bar-fill" :style="'width:' + timerPct + '%'"></div>
+        </div>
+      </div>
+
+      <!-- Waiting message when not your turn -->
+      <div class="section" x-show="!isMyTurn && myPlayer && !myPlayer.is_folded">
+        <div class="label">waiting</div>
+        <div style="text-align: center; color: var(--text-secondary); padding: 1rem 0;">
+          <span x-show="game.activePlayerId">Waiting for <strong x-text="activePlayerName"></strong> to act...</span>
+          <span x-show="!game.activePlayerId">Waiting for next hand...</span>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- Socket.io for real-time updates -->
+  <script src="/socket.io/socket.io.js"></script>
+  
+  <!-- Core JavaScript modules -->
+  <script src="../javascript/auth.js"></script>
+  <script src="../javascript/pokergame.js"></script>
+  <script src="../javascript/socket-client.js"></script>
+</body>
+</html>

@@ -148,7 +148,7 @@ router.put('/', authenticateToken, async (req, res) => {
             bets,
             community_cards
         });
-
+        // Fetch current game state for last action comparison
         const [gameRows] = await db.execute(`
                 SELECT g.game_id, g.table_id, g.dealer_seat, g.hot_seat, g.stage, 
                        g.aggrounds, g.pot, g.current_bet, g.bets, g.community_cards
@@ -157,7 +157,7 @@ router.put('/', authenticateToken, async (req, res) => {
             `, [game_id]);
         const og = gameRows[0];
         const oldGameState = createFromJSON(og);
-
+        // Check last action and broadcast to table
         const lastActionPacket = checkLastAction(oldGameState, newGameState);
         gameSocketManager.sendLastAction(table_id, lastActionPacket);
 
@@ -209,7 +209,8 @@ router.put('/', authenticateToken, async (req, res) => {
             return res.status(404).json({ message: 'Game not found' });
         }
 
-        // Fetch complete game state and broadcast to table
+        //Logic for next operation
+        
 
         res.json({ message: 'Game updated successfully' });
     } catch (error) {
@@ -269,3 +270,9 @@ router.delete('/', authenticateToken, async (req, res) => {
     }
 });
 
+//TODO: Add endpoints for player actions (bet, call, fold, check) that also broadcast to table via sockets
+router.post('/action', authenticateToken, async (req, res) => {
+    try {
+        const { game_id, player_id, action, amount } = req.body;
+
+module.exports = router;
