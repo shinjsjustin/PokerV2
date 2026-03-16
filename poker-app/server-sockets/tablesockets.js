@@ -1,0 +1,275 @@
+const { 
+    PackageType,
+    ServerToPlayerMessage, 
+    ServerToTableMessage, 
+    PlayerToPlayerMessage 
+} = require('../datapacks/schema');
+
+/**
+ * TableSocketManager - Socket.IO wrapper for table-related communications
+ */
+class TableSocketManager {
+    constructor() {
+        this.tables = new Map(); // table_id -> Set of socket ids
+        this.playerSockets = new Map(); // player_id -> socket id
+        this.socketPlayers = new Map(); // socket id -> player_id
+        this.playerTables = new Map(); // player_id -> table_id
+    }
+
+    init(io) {
+        this.io = io;
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // Connection Management
+    // ═══════════════════════════════════════════════════════════════════
+
+    /**
+     * Register a player's socket connection
+     */
+    registerPlayer(socket, playerId) {
+        this.playerSockets.set(playerId, socket.id);
+        this.socketPlayers.set(socket.id, playerId);
+        
+        socket.on('disconnect', () => this.handleDisconnect(socket));
+    }
+
+    /**
+     * Handle player disconnect - clean up all references
+     */
+    handleDisconnect(socket) {
+        const playerId = this.socketPlayers.get(socket.id);
+        if (!playerId) return;
+
+        const tableId = this.playerTables.get(playerId);
+        if (tableId) {
+            this.leaveTable(playerId, tableId);
+        }
+
+        this.playerSockets.delete(playerId);
+        this.socketPlayers.delete(socket.id);
+    }
+
+    /**
+     * Get socket by player ID
+     */
+    getSocket(playerId) {
+        const socketId = this.playerSockets.get(playerId);
+        return socketId ? this.io.sockets.sockets.get(socketId) : null;
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // Table Management
+    // ═══════════════════════════════════════════════════════════════════
+
+    /**
+     * Add player to a table room
+     */
+    joinTable(playerId, tableId) {
+        const socket = this.getSocket(playerId);
+        if (!socket) return false;
+
+        // Leave current table if in one
+        const currentTable = this.playerTables.get(playerId);
+        if (currentTable) {
+            this.leaveTable(playerId, currentTable);
+        }
+
+        // Join new table
+        socket.join(`table:${tableId}`);
+        this.playerTables.set(playerId, tableId);
+
+        if (!this.tables.has(tableId)) {
+            this.tables.set(tableId, new Set());
+        }
+        this.tables.get(tableId).add(playerId);
+
+        // Notify table of new player
+        this.sendToTable(tableId, `Player ${playerId} has joined the table`);
+        
+        return true;
+    }
+
+    /**
+     * Remove player from a table room
+     */
+    leaveTable(playerId, tableId) {
+        const socket = this.getSocket(playerId);
+        if (!socket) return false;
+
+        socket.leave(`table:${tableId}`);
+        this.playerTables.delete(playerId);
+
+        const tableMembers = this.tables.get(tableId);
+        if (tableMembers) {
+            tableMembers.delete(playerId);
+            if (tableMembers.size === 0) {
+                this.tables.delete(tableId);
+            }
+        }
+
+        // Notify table of player leaving
+        this.sendToTable(tableId, `Player ${playerId} has left the table`);
+
+        return true;
+    }
+
+    /**
+     * Get all players at a table
+     */
+    getTablePlayers(tableId) {
+        return Array.from(this.tables.get(tableId) || []);
+    }
+
+    /**
+     * Get player's current table
+     */
+    getPlayerTable(playerId) {
+        return this.playerTables.get(playerId);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // Messaging - Server to Client
+    // ═══════════════════════════════════════════════════════════════════
+
+    /**
+     * Send a message to a specific player
+     */
+    sendToPlayer(playerId, message) {
+        const socket = this.getSocket(playerId);
+        if (!socket) return false;
+
+        const packet = new ServerToPlayerMessage({
+            player_id: playerId,
+            message: message
+        });
+
+        socket.emit(PackageType.SERVER_TO_PLAYER_MESSAGE, packet);
+        return true;
+    }
+
+    /**
+     * Send a message to all players at a table
+     */
+    sendToTable(tableId, message) {
+        const packet = new ServerToTableMessage({
+            table_id: tableId,
+            message: message
+        });
+
+        this.io.to(`table:${tableId}`).emit(PackageType.SERVER_TO_TABLE_MESSAGE, packet);
+        return true;
+    }
+
+    /**
+     * Broadcast a message to all connected players
+     */
+    broadcast(message) {
+        const packet = new ServerToTableMessage({
+            table_id: 'global',
+            message: message
+        });
+
+        this.io.emit(PackageType.SERVER_TO_TABLE_MESSAGE, packet);
+        return true;
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // Messaging - Player to Player
+    // ═══════════════════════════════════════════════════════════════════
+
+    /**
+     * Relay a message from one player to another
+     */
+    sendPlayerToPlayer(fromPlayerId, toPlayerId, message) {
+        const toSocket = this.getSocket(toPlayerId);
+        if (!toSocket) return false;
+
+        const packet = new PlayerToPlayerMessage({
+            from_player_id: fromPlayerId,
+            to_player_id: toPlayerId,
+            message: message
+        });
+
+        toSocket.emit(PackageType.PLAYER_TO_PLAYER_MESSAGE, packet);
+        return true;
+    }
+
+    /**
+     * Relay a message from one player to entire table (chat)
+     */
+    sendPlayerToTable(fromPlayerId, message) {
+        const tableId = this.playerTables.get(fromPlayerId);
+        if (!tableId) return false;
+
+        const tablePlayers = this.getTablePlayers(tableId);
+        
+        tablePlayers.forEach(playerId => {
+            if (playerId !== fromPlayerId) {
+                this.sendPlayerToPlayer(fromPlayerId, playerId, message);
+            }
+        });
+
+        return true;
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // Raw Emit - For custom packets
+    // ═══════════════════════════════════════════════════════════════════
+
+    /**
+     * Emit a raw packet to a specific player
+     */
+    emitToPlayer(playerId, eventType, data) {
+        const socket = this.getSocket(playerId);
+        if (!socket) return false;
+
+        socket.emit(eventType, data);
+        return true;
+    }
+
+    /**
+     * Emit a raw packet to all players at a table
+     */
+    emitToTable(tableId, eventType, data) {
+        this.io.to(`table:${tableId}`).emit(eventType, data);
+        return true;
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // Setup Listeners
+    // ═══════════════════════════════════════════════════════════════════
+
+    /**
+     * Setup default socket listeners for a connected socket
+     */
+    setupListeners(socket, playerId) {
+        this.registerPlayer(socket, playerId);
+
+        // Handle join table requests
+        socket.on('join_table', (tableId) => {
+            this.joinTable(playerId, tableId);
+        });
+
+        // Handle leave table requests
+        socket.on('leave_table', () => {
+            const tableId = this.playerTables.get(playerId);
+            if (tableId) {
+                this.leaveTable(playerId, tableId);
+            }
+        });
+
+        // Handle player-to-player messages
+        socket.on(PackageType.PLAYER_TO_PLAYER_MESSAGE, (data) => {
+            this.sendPlayerToPlayer(playerId, data.to_player_id, data.message);
+        });
+
+        // Handle player-to-table messages (chat)
+        socket.on('player_table_chat', (data) => {
+            this.sendPlayerToTable(playerId, data.message);
+        });
+    }
+}
+
+// Export singleton instance
+module.exports = new TableSocketManager();

@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Poker App - Register</title>
+    <script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <link rel="stylesheet" href="../css/styles.css">
+</head>
+<body>
+    <div class="container" x-data="registerApp()">
+        <div class="auth-card">
+            <h1>🃏 Join Poker App</h1>
+            <p class="auth-subtitle">Create your account and start playing!</p>
+            
+            <!-- Error/Success Messages -->
+            <div x-show="message" 
+                 x-text="message"
+                 :class="messageType === 'error' ? 'alert alert-error' : 'alert alert-success'"
+                 x-transition></div>
+            
+            <form @submit.prevent="handleRegister" class="auth-form">
+                <div class="form-group">
+                    <label for="username">Username</label>
+                    <input 
+                        type="text" 
+                        id="username" 
+                        x-model="form.username"
+                        :disabled="loading"
+                        required
+                        minlength="3"
+                        placeholder="Choose a username">
+                    <small class="form-help">At least 3 characters</small>
+                </div>
+                
+                <div class="form-group">
+                    <label for="email">Email</label>
+                    <input 
+                        type="email" 
+                        id="email" 
+                        x-model="form.email"
+                        :disabled="loading"
+                        required
+                        placeholder="Enter your email address">
+                </div>
+                
+                <div class="form-group">
+                    <label for="password">Password</label>
+                    <input 
+                        type="password" 
+                        id="password" 
+                        x-model="form.password"
+                        :disabled="loading"
+                        required
+                        minlength="6"
+                        placeholder="Create a secure password">
+                    <small class="form-help">At least 6 characters</small>
+                </div>
+                
+                <div class="form-group">
+                    <label for="confirmPassword">Confirm Password</label>
+                    <input 
+                        type="password" 
+                        id="confirmPassword" 
+                        x-model="form.confirmPassword"
+                        :disabled="loading"
+                        required
+                        placeholder="Confirm your password">
+                    <small x-show="form.confirmPassword && form.password !== form.confirmPassword" 
+                           class="form-help error">Passwords don't match</small>
+                </div>
+                
+                <button 
+                    type="submit" 
+                    class="btn btn-primary btn-full"
+                    :disabled="loading || (form.password !== form.confirmPassword)">
+                    <span x-show="!loading">Create Account</span>
+                    <span x-show="loading">Creating Account...</span>
+                </button>
+            </form>
+            
+            <div class="auth-links">
+                <p>Already have an account? 
+                    <a href="login.html">Login here</a>
+                </p>
+                <p>
+                    <a href="../index.html">← Back to Welcome</a>
+                </p>
+            </div>
+        </div>
+    </div>
+
+    <script src="../javascript/auth.js"></script>
+    <script src="../javascript/register.js"></script>
+</body>
+</html>

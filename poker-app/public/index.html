@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Poker App - Welcome</title>
+    <script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+    <div class="container" x-data="welcomeApp()">
+        <div class="welcome-card">
+            <h1>🃏 Welcome to Poker App</h1>
+            <p class="welcome-subtitle">Join the ultimate online poker experience</p>
+            
+            <div class="button-group">
+                <a href="html/login.html" class="btn btn-primary">
+                    Login
+                </a>
+                <a href="html/register.html" class="btn btn-secondary">
+                    Register
+                </a>
+            </div>
+            
+            <div class="features">
+                <div class="feature">
+                    <h3>🎮 Real-time Gaming</h3>
+                    <p>Play poker with friends in real-time</p>
+                </div>
+                <div class="feature">
+                    <h3>💰 Chip Management</h3>
+                    <p>Track your winnings and manage your bankroll</p>
+                </div>
+                <div class="feature">
+                    <h3>👥 Multiplayer Tables</h3>
+                    <p>Join tables with players worldwide</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="javascript/auth.js"></script>
+    <script>
+        function welcomeApp() {
+            return {
+                init() {
+                    // Check if user is already logged in
+                    if (getAuthToken()) {
+                        window.location.href = 'html/home.html';
+                    }
+                }
+            }
+        }
+    </script>
+</body>
+</html>

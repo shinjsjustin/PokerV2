@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Poker App - Login</title>
+    <script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <link rel="stylesheet" href="../css/styles.css">
+</head>
+<body>
+    <div class="container" x-data="loginApp()">
+        <div class="auth-card">
+            <h1>🃏 Login to Poker App</h1>
+            
+            <!-- Error/Success Messages -->
+            <div x-show="message" 
+                 x-text="message"
+                 :class="messageType === 'error' ? 'alert alert-error' : 'alert alert-success'"
+                 x-transition></div>
+            
+            <form @submit.prevent="handleLogin" class="auth-form">
+                <div class="form-group">
+                    <label for="username">Username or Email</label>
+                    <input 
+                        type="text" 
+                        id="username" 
+                        x-model="form.username"
+                        :disabled="loading"
+                        required
+                        placeholder="Enter your username or email">
+                </div>
+                
+                <div class="form-group">
+                    <label for="password">Password</label>
+                    <input 
+                        type="password" 
+                        id="password" 
+                        x-model="form.password"
+                        :disabled="loading"
+                        required
+                        placeholder="Enter your password">
+                </div>
+                
+                <button 
+                    type="submit" 
+                    class="btn btn-primary btn-full"
+                    :disabled="loading">
+                    <span x-show="!loading">Login</span>
+                    <span x-show="loading">Logging in...</span>
+                </button>
+            </form>
+            
+            <div class="auth-links">
+                <p>Don't have an account? 
+                    <a href="register.html">Register here</a>
+                </p>
+                <p>
+                    <a href="../index.html">← Back to Welcome</a>
+                </p>
+            </div>
+        </div>
+    </div>
+
+    <script src="../javascript/auth.js"></script>
+    <script src="../javascript/login.js"></script>
+</body>
+</html>

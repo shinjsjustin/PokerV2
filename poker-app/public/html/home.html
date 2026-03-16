@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Poker App - Home</title>
+    <script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <link rel="stylesheet" href="../css/styles.css">
+</head>
+<body>
+    <div class="container" x-data="homeApp()">
+        <!-- Navigation Header -->
+        <header class="header">
+            <div class="nav-content">
+                <h1 class="logo">🃏 Poker App</h1>
+                <div class="nav-actions">
+                    <span class="welcome-text">Welcome, <strong x-text="user.username"></strong>!</span>
+                    <button @click="handleLogout" class="btn btn-outline">Logout</button>
+                </div>
+            </div>
+        </header>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            <!-- User Dashboard -->
+            <div class="dashboard-card">
+                <h2>Your Dashboard</h2>
+                <div class="user-stats">
+                    <div class="stat-item">
+                        <span class="stat-label">Username:</span>
+                        <span class="stat-value" x-text="user.username"></span>
+                    </div>
+                    <div class="stat-item">
+                        <span class="stat-label">Email:</span>
+                        <span class="stat-value" x-text="user.email"></span>
+                    </div>
+                    <div class="stat-item">
+                        <span class="stat-label">Chip Balance:</span>
+                        <div class="chip-balance-container">
+                            <span class="stat-value">$<span x-text="formatNumber(user.chip_balance || 0)"></span></span>
+                            <button class="btn btn-sm btn-success" @click="addBalance" :disabled="addingBalance">
+                                <span x-show="!addingBalance">+ Add Chips</span>
+                                <span x-show="addingBalance">Adding...</span>
+                            </button>
+                        </div>
+                    </div>
+                    <div class="stat-item">
+                        <span class="stat-label">Member Since:</span>
+                        <span class="stat-value" x-text="formatDate(user.created_at)"></span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Game Actions -->
+            <div class="actions-grid">
+                <div class="action-card">
+                    <h3>�️ Create Table</h3>
+                    <p>Start a new poker table</p>
+                    <button class="btn btn-primary" @click="createTable">Create Table</button>
+                </div>
+                
+                <div class="action-card">
+                    <h3>🪑 Join Table</h3>
+                    <p>Join an existing table</p>
+                    <button class="btn btn-secondary" @click="joinTable">Browse Tables</button>
+                </div>
+                
+                <div class="action-card" x-show="currentTable">
+                    <h3>🔄 Return to Table</h3>
+                    <p>Continue your current game</p>
+                    <button class="btn btn-success" @click="returnToTable">Return to Game</button>
+                </div>
+                
+                <div class="action-card">
+                    <h3>📊 Statistics</h3>
+                    <p>View your game history and stats</p>
+                    <button class="btn btn-secondary" @click="viewStats">View Stats</button>
+                </div>
+            </div>
+
+            <!-- Recent Activity -->
+            <div class="activity-card">
+                <h3>🕒 Recent Activity</h3>
+                <div x-show="loading" class="loading">Loading your recent games...</div>
+                <div x-show="!loading && recentGames.length === 0" class="empty-state">
+                    <p>No recent games found. Start playing to see your activity here!</p>
+                </div>
+                <div x-show="!loading && recentGames.length > 0" class="activity-list">
+                    <template x-for="game in recentGames" :key="game.id">
+                        <div class="activity-item">
+                            <span class="activity-game" x-text="`Game #${game.id}`"></span>
+                            <span class="activity-result" x-text="game.result"></span>
+                            <span class="activity-date" x-text="formatDate(game.date)"></span>
+                        </div>
+                    </template>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script src="../javascript/auth.js"></script>
+    <script src="../javascript/home.js"></script>
+</body>
+</html>
