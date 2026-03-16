@@ -275,4 +275,10 @@ router.post('/action', authenticateToken, async (req, res) => {
     try {
         const { game_id, player_id, action, amount } = req.body;
 
+        
+    } catch (error) {
+        console.error('Error processing player action:', error);
+        res.status(500).json({ message: 'Failed to process player action' });
+    }
+});
 module.exports = router;
