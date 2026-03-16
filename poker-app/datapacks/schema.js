@@ -128,6 +128,16 @@ class GameState {
         this.bets = bets; // array of {player_id, bet_amount}
         this.community_cards = community_cards; // array of card objects
     }
+
+    difference(otherGameState){
+        const differences = {};
+        for (const key of Object.keys(this)){
+            if (JSON.stringify(this[key]) !== JSON.stringify(otherGameState[key])){
+                differences[key] = this[key];
+            }
+        }
+        return differences;
+    }
 }
 
 class GameStateBet {
