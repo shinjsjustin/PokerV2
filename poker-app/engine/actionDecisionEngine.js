@@ -14,35 +14,14 @@ const {
     createFromJSON
 } = require('../datapacks/schema.js');
 
-/**
- * Game Action Decision Engine
- * 
- * This module provides functions to determine the next course of action
- * in the poker game flow based on current game state and player actions.
- * 
- * All functions return boolean values for easy route decision making.
- */
-
-/**
- * Template function for game flow decisions
- * 
- * @param {Object} gameData - Current game state data
- * @param {Object} playerAction - Player action data (optional)
- * @param {Object} tableData - Table data (optional)
- * @returns {boolean} - True if action should proceed, false otherwise
- * 
- * Example usage in routes:
- * if (shouldProgressToNextStage(gameData, playerAction)) {
- *   // Progress to next stage logic
- * }
- */
-function shouldProgressToNextStage() {
-}
+/* Main thing to consider is GameState and PlayerAction structures.  
+ * GameState
+*/
 
 function proceed(gameState){
     let aggroround = gameState.aggrounds;
     if(aggroround === 0){
-        
+
     }
 }
 // Params: gameState is GameState, newAction is PlayerAction
