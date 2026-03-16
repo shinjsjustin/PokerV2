@@ -2,6 +2,7 @@ const db = require('../db/db');
 const jwt = require('jsonwebtoken');
 const express = require('express');
 const router = express.Router();
+const gameSocketManager = require('../server-sockets/gamesockets');
 
 // Middleware to verify JWT token
 const authenticateToken = (req, res, next) => {

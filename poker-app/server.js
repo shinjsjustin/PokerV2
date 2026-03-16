@@ -6,6 +6,7 @@ const session = require('express-session');
 const dotenv = require('dotenv');
 const { router: authRoutes } = require('./routes/userauth');
 const tableSocketManager = require('./server-sockets/tablesockets');
+const gameSocketManager = require('./server-sockets/gamesockets');
 
 dotenv.config();
 
@@ -18,8 +19,9 @@ const io = new Server(server, {
   }
 });
 
-// Initialize socket manager
+// Initialize socket managers
 tableSocketManager.init(io);
+gameSocketManager.init(io);
 
 // Middleware
 app.use(cors({
