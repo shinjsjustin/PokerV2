@@ -15,6 +15,8 @@ const {
     ServerUpdateGameEnd,
  } = require('../datapacks/schema');
 
+ const { updateGameStateWithNewBet } = require('../engine/gamelogic');
+
 // Middleware to verify JWT token
 const authenticateToken = (req, res, next) => {
     const authHeader = req.headers['authorization'];
@@ -33,6 +35,7 @@ const authenticateToken = (req, res, next) => {
     });
 };
 
+// TODO: double check this
 router.get('/', authenticateToken, async (req, res) => {
     try {
         const { game_id, table_id } = req.query;
@@ -46,7 +49,7 @@ router.get('/', authenticateToken, async (req, res) => {
 
         if (game_id) {
             query = `
-                SELECT game_id, table_id, pot, community_cards, stage, dealer_seat, active_seat
+                SELECT game_id, table_id, pot, community_cards, stage, dealer_seat, hot_seat, aggrounds, current_bet, bets, deck
                 FROM games
                 WHERE game_id = ?
             `;
@@ -54,7 +57,7 @@ router.get('/', authenticateToken, async (req, res) => {
         } else {
             // Get the most recent active game for the table
             query = `
-                SELECT game_id, table_id, pot, community_cards, stage, dealer_seat, active_seat
+                SELECT game_id, table_id, pot, community_cards, stage, dealer_seat, hot_seat, aggrounds, current_bet, bets, deck
                 FROM games
                 WHERE table_id = ? AND stage != 'game_over'
                 ORDER BY started_at DESC
@@ -102,36 +105,39 @@ router.post('/', authenticateToken, async (req, res) => {
     }
 });
 
-function checkLastAction(oldGameState, newGameState){
-    const oldSeat = oldGameState.hot_seat;
-    if (oldSeat !== (newGameState.hot_seat + 1) % newGameState.max_players) {
-        throw new Error('Hot seat did not advance correctly');
-    }
-    if (newGameState.bets[oldSeat] === -1){
-        return new ServerUpdateLastAction({
-            game_id: newGameState.game_id,
-            seat: oldSeat,
-            bet_amount: -1,
-            allin: false,
-            folded: true
-        });
-    }
+router.put('/raise', authenticateToken, async (req, res) => {
+    try{
+        const { game_id, seat, current_bet, player_bet, allin } = req.body;
+        if (!game_id || seat === undefined || current_bet === undefined || player_bet === undefined || allin === undefined){
+            return res.status(400).json({ message: 'Missing required fields' });
+        }
 
-    const diff = newGameState.bets[oldSeat] - oldGameState.bets[oldSeat];
-    return new ServerUpdateLastAction({
-            game_id: newGameState.game_id,
-            seat: oldSeat,
-            bet_amount: diff,
-            allin: false,
-            folded: false
-        });
-}
+        const newAction = new PlayerAction({game_id, seat, current_bet, player_bet, allin});
+        // Fetch current game state for last action comparison
+        const [gameRows] = await db.execute(`
+                SELECT g.game_id, g.table_id, g.dealer_seat, g.hot_seat, g.stage, 
+                       g.aggrounds, g.pot, g.current_bet, g.bets, g.community_cards, g.deck
+                FROM gamestate g
+                WHERE g.game_id = ?
+            `, [game_id]);
+        if (gameRows.length === 0){
+            return res.status(404).json({ message: 'Game not found' });
+        }
+        const og = gameRows[0];
+        const oldGameState = createFromJSON(og);
+        const {gameState, proceedResult, lastAction} = updateGameStateWithNewBet(oldGameState, newAction);
+        // TODO FINISH
+    } catch (error){
+        console.error('Error processing raise action:', error);
+        res.status(500).json({ message: 'Failed to process raise action' });
+    }
+});
 
 // PUT /games - Update game by game_id or table_id
 // Can update: pot, community_cards, stage, active_seat, dealer_seat
 router.put('/', authenticateToken, async (req, res) => {
     try {
-        const { game_id, table_id, dealer_seat, hot_seat, stage, aggrounds, pot, current_bet, bets, community_cards } = req.body;
+        const { game_id, table_id, dealer_seat, hot_seat, stage, aggrounds, pot, current_bet, bets, community_cards, deck } = req.body;
 
         if (!game_id && !table_id) {
             return res.status(400).json({ message: 'game_id or table_id is required' });
@@ -146,12 +152,13 @@ router.put('/', authenticateToken, async (req, res) => {
             pot,
             current_bet,
             bets,
-            community_cards
+            community_cards,
+            deck
         });
         // Fetch current game state for last action comparison
         const [gameRows] = await db.execute(`
                 SELECT g.game_id, g.table_id, g.dealer_seat, g.hot_seat, g.stage, 
-                       g.aggrounds, g.pot, g.current_bet, g.bets, g.community_cards
+                       g.aggrounds, g.pot, g.current_bet, g.bets, g.community_cards, g.deck
                 FROM gamestate g
                 WHERE g.game_id = ?
             `, [game_id]);
@@ -179,13 +186,17 @@ router.put('/', authenticateToken, async (req, res) => {
             updates.push('stage = ?');
             values.push(stage);
         }
-        if (active_seat !== undefined) {
+        if (hot_seat !== undefined) {
             updates.push('hot_seat = ?');
-            values.push(active_seat);
+            values.push(hot_seat);
         }
         if (dealer_seat !== undefined) {
             updates.push('dealer_seat = ?');
             values.push(dealer_seat);
+        }
+        if (deck !== undefined) {
+            updates.push('deck = ?');
+            values.push(JSON.stringify(deck));
         }
 
         if (updates.length === 0) {

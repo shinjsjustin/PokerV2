@@ -37,6 +37,7 @@ CREATE TABLE gamestate (
   current_bet     INT     NOT NULL DEFAULT 0,
   bets            JSON    NULL,
   community_cards JSON    NULL,
+  deck            JSON    NULL,
 
   started_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   ended_at        TIMESTAMP NULL,

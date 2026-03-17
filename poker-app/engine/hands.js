@@ -91,26 +91,26 @@ class PokerCards {
      * Deal community cards for a stage
      * @param {string[]} deck - Current deck
      * @param {string[]} communityCards - Current community cards
-     * @param {string} stage - 'flop', 'turn', or 'river'
+     * @param {int} stage - 'flop', 'turn', or 'river'
      * @returns {Object} { communityCards: string[], deck: string[] }
      */
     dealCommunityCards(deck, communityCards, stage) {
         let numCards = 0;
         
         switch (stage) {
-            case 'flop':
+            case 1:
                 if (communityCards.length !== 0) {
                     throw new Error('Flop already dealt');
                 }
                 numCards = 3;
                 break;
-            case 'turn':
+            case 2:
                 if (communityCards.length !== 3) {
                     throw new Error('Must deal flop before turn');
                 }
                 numCards = 1;
                 break;
-            case 'river':
+            case 3:
                 if (communityCards.length !== 4) {
                     throw new Error('Must deal turn before river');
                 }

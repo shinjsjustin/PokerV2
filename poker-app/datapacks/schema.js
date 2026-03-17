@@ -63,20 +63,20 @@ class PlayerToPlayerMessage {
 // Server Requests
 // ═══════════════════════════════════════════════════════════════════
 class ServerRequestCheck {
-    constructor ({game_id, player_id, min_raise}){
+    constructor ({game_id, seat, min_raise}){
         this.type = Codewords.SERVER_REQUEST_CHECK;
         this.game_id = game_id;
-        this.player_id = player_id;
+        this.seat = seat;
         this.min_raise = min_raise;
         this.actions = ["check", "raise", "allin"];
     }
 }
 
 class ServerRequestCall {
-    constructor ({game_id, player_id, min_raise, to_call}){
+    constructor ({game_id, seat, min_raise, to_call}){
         this.type = Codewords.SERVER_REQUEST_CALL;
         this.game_id = game_id;
-        this.player_id = player_id;
+        this.seat = seat;
         this.min_raise = min_raise;
         this.to_call = to_call;
         this.actions = [`call ${to_call}`, "raise", "allin", "fold"];
@@ -115,7 +115,7 @@ class PlayerAction {
 // GAME 
 // ═══════════════════════════════════════════════════════════════════
 class GameState {
-    constructor ({game_id, table_id, dealer_seat, hot_seat, stage, aggrounds, pot, current_bet, bets, community_cards}){
+    constructor ({game_id, table_id, dealer_seat, hot_seat, stage, aggrounds, pot, current_bet, bets, community_cards, deck}){
         this.type = Codewords.GAMESTATE;
         this.game_id = game_id;
         this.table_id = table_id;
@@ -125,8 +125,9 @@ class GameState {
         this.aggrounds = aggrounds; // array of {player_id, seat, hole_cards}
         this.pot = pot;
         this.current_bet = current_bet;
-        this.bets = bets; // array of {player_id, bet_amount}
+        this.bets = bets; // array of GameStateBet objects
         this.community_cards = community_cards; // array of card objects
+        this.deck = deck; // array of card objects
     }
 
     difference(otherGameState){
