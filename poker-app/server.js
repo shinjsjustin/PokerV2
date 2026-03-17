@@ -5,6 +5,8 @@ const cors = require('cors');
 const session = require('express-session');
 const dotenv = require('dotenv');
 const { router: authRoutes } = require('./routes/userauth');
+const tablesRoutes = require('./routes/tables');
+const gameRoutes = require('./routes/game');
 const tableSocketManager = require('./server-sockets/tablesockets');
 const gameSocketManager = require('./server-sockets/gamesockets');
 
@@ -59,6 +61,8 @@ io.on('connection', (socket) => {
 
 // Routes
 app.use('/api/auth', authRoutes);
+app.use('/api/tables', tablesRoutes);
+app.use('/api/games', gameRoutes);
 
 app.get('/', (req, res) => {
   res.sendFile(__dirname + '/public/index.html');

@@ -147,8 +147,8 @@ router.post('/', authenticateToken, async (req, res) => {
         }
         
         const [result] = await db.execute(`
-            INSERT INTO tables (name, max_players, small_blind, big_blind, dealer_seat, status)
-            VALUES (?, ?, ?, ?, ?, 'waiting')
+            INSERT INTO tables (name, max_players, small_blind, big_blind, dealer_seat)
+            VALUES (?, ?, ?, ?, ?)
         `, [name.trim(), max_players, small_blind, big_blind, dealer_seat]);
         
         const newTableId = result.insertId;
@@ -171,7 +171,7 @@ router.post('/', authenticateToken, async (req, res) => {
 router.put('/:tableId', authenticateToken, async (req, res) => {
     try {
         const { tableId } = req.params;
-        const { name, max_players, small_blind, big_blind, dealer_seat, status } = req.body;
+        const { name, max_players, small_blind, big_blind, dealer_seat } = req.body;
         
         // Check if table exists
         const [tableResult] = await db.execute(
@@ -220,14 +220,7 @@ router.put('/:tableId', authenticateToken, async (req, res) => {
             values.push(dealer_seat);
             changeMessages.push(`Dealer seat moved to ${dealer_seat}`);
         }
-        if (status && status !== oldTable.status) {
-            if (!['waiting', 'active', 'closed'].includes(status)) {
-                return res.status(400).json({ message: 'Invalid status' });
-            }
-            updateFields.push('status = ?');
-            values.push(status);
-            changeMessages.push(`Table status changed to ${status}`);
-        }
+
         
         if (updateFields.length === 0) {
             return res.status(400).json({ message: 'No fields to update' });
@@ -271,8 +264,8 @@ router.post('/:tableId/join', authenticateToken, async (req, res) => {
         try {
             // Check if table exists and get info
             const [tableResult] = await db.execute(
-                'SELECT * FROM tables WHERE table_id = ? AND status != "closed"', 
-                [tableId]
+            'SELECT * FROM tables WHERE table_id = ?', 
+            [tableId]
             );
             
             if (tableResult.length === 0) {
@@ -337,13 +330,7 @@ router.post('/:tableId/join', authenticateToken, async (req, res) => {
                 WHERE player_id = ?
             `, [tableId, nextSeat, playerId]);
             
-            // Update table status if this is the first player
-            if (playerCount[0].count === 0) {
-                await db.execute(
-                    'UPDATE tables SET status = "waiting" WHERE table_id = ?', 
-                    [tableId]
-                );
-            }
+
             
             await db.query('COMMIT');
             
@@ -466,19 +453,12 @@ async function leaveTableHelper(tableId, playerId) {
             [playerId]
         );
         
-        // Check if table is now empty and update status
+        // Check remaining players count for notifications
         const [remainingPlayers] = await db.execute(`
             SELECT COUNT(*) as count 
             FROM players 
             WHERE table_id = ? AND status IN ('active', 'sitting_out')
         `, [tableId]);
-        
-        if (remainingPlayers[0].count === 0) {
-            await db.execute(
-                'UPDATE tables SET status = "waiting" WHERE table_id = ?', 
-                [tableId]
-            );
-        }
         
         await db.query('COMMIT');
         
