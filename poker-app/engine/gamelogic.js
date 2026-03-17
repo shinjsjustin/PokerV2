@@ -83,6 +83,7 @@ function proceed(gameState) {
 // Use these 
 // ═══════════════════════════════════════════════════════════════════
 /**
+ * possible update: hot_seat, stage, aggrounds, pot, current_bet, bets, community_cards, deck, max_players
  * @param {GameState} gameState - Current state of the game
  * @param {PlayerAction} newAction - Action taken by player
  * @returns {{gameState: GameState, proceedResult: number, lastAction: ServerUpdateLastAction}} - Updated game state and whether the game should continue (1 = continue, 0 = stage progression, -1 = game over)
@@ -148,8 +149,9 @@ function updateGameStateWithNewBet(gameState, newAction) {
 }
 
 
-/**
- * 
+/** Take a gamestate and determine who plays next and what request they should receive
+ *  @param {GameState} gameState - Current state of the game
+ * @returns {ServerRequestCall|ServerRequestCheck} - Request object for next player action
  */
 function getNextRequest(gameState) {
     const hotSeatBet = gameState.bets[gameState.hot_seat];
@@ -173,8 +175,14 @@ function getNextRequest(gameState) {
         });
     }
 }
+
+function determineWinner(players, communityCards) {
+    return pokerCards.determineWinners(players, communityCards);
+}
+
 // Export the template function and any helper utilities you might need
 module.exports = {
     updateGameStateWithNewBet,
     getNextRequest,
+    determineWinner
 };

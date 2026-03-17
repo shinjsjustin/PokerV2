@@ -6,7 +6,10 @@ const {
     ServerUpdateStageProgression,
     ServerUpdateGameEnd,
     GameState,
-    GameStateBet
+    GameStateBet,
+    ErrorMessage,
+    ActionResponse,
+    RequestGameState
 } = require('../datapacks/schema');
 
 /**
@@ -28,16 +31,16 @@ class GameSocketManager {
     /**
      * Request player to check, raise, or go all-in (no bet to call)
      */
-    requestCheck(socket, { game_id, player_id, min_raise }) {
-        const packet = new ServerRequestCheck({ game_id, player_id, min_raise });
+    requestCheck(socket, { game_id, player_id, seat, min_raise }) {
+        const packet = new ServerRequestCheck({ game_id, player_id, seat, min_raise });
         socket.emit(PackageType.SERVER_REQUEST_CHECK, packet);
     }
 
     /**
      * Request player to call, raise, fold, or go all-in
      */
-    requestCall(socket, { game_id, player_id, min_raise, to_call }) {
-        const packet = new ServerRequestCall({ game_id, player_id, min_raise, to_call });
+    requestCall(socket, { game_id, player_id, seat, min_raise, to_call }) {
+        const packet = new ServerRequestCall({ game_id, player_id, seat, min_raise, to_call });
         socket.emit(PackageType.SERVER_REQUEST_CALL, packet);
     }
 
@@ -113,6 +116,37 @@ class GameSocketManager {
      */
     emitToSocket(socket, eventType, data) {
         socket.emit(eventType, data);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // Error Handling & Communication
+    // ═══════════════════════════════════════════════════════════════════
+
+    /**
+     * Send error message to specific player
+     */
+    sendError(socket, message, game_id = null, player_id = null) {
+        const packet = new ErrorMessage({ message, game_id, player_id });
+        socket.emit(PackageType.ERROR_MESSAGE, packet);
+    }
+
+    /**
+     * Send action response to specific player
+     */
+    sendActionResponse(socket, success, error = null, game_id = null, player_id = null) {
+        const packet = new ActionResponse({ success, error, game_id, player_id });
+        socket.emit(PackageType.ACTION_RESPONSE, packet);
+    }
+
+    /**
+     * Handle incoming game state requests
+     */
+    setupListener(socket, onGameStateRequest) {
+        socket.on(PackageType.REQUEST_GAME_STATE, (data) => {
+            if (onGameStateRequest && typeof onGameStateRequest === 'function') {
+                onGameStateRequest(data, socket);
+            }
+        });
     }
 
     // ═══════════════════════════════════════════════════════════════════

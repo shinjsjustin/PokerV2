@@ -1,8 +1,19 @@
-const socket = io();
+// Import schema types for data package validation
+// Note: For browser environments, you may need to include schema.js as a script tag
+// and access types globally if not using a module bundler
+try {
+    // For Node.js/bundler environments
+    if (typeof require !== 'undefined') {
+        const { PackageType, createFromJSON } = require('../../datapacks/schema');
+        window.PackageType = PackageType;
+        window.createFromJSON = createFromJSON;
+    }
+} catch (e) {
+    // For browser environments, assume schema is loaded globally
+    console.log('Using global schema definitions');
+}
 
-// Import schema types - adjust path as needed for your build setup
-// If you're not using a bundler, you might need to include schema.js as a script tag
-// and access the types globally
+const socket = io();
 
 // ═══════════════════════════════════════════════════════════════════
 // CONNECTION LIFECYCLE
@@ -99,6 +110,13 @@ socket.on('player_to_player_message', (packet) => {
 // Server requests check/raise/allin (no bet to call)
 socket.on('server_request_check', (packet) => {
     console.log('Action requested - Check scenario:', packet);
+    
+    // Validate packet structure
+    if (!packet.game_id || !packet.player_id || packet.seat === undefined) {
+        console.error('Invalid server_request_check packet:', packet);
+        return;
+    }
+    
     currentGameId = packet.game_id;
     
     if (packet.player_id === currentPlayerId && window.pokerGameInstance) {
@@ -114,7 +132,7 @@ socket.on('server_request_check', (packet) => {
             toCall: 0,
             minRaise: packet.min_raise,
             maxRaise: getPlayerChips(),
-            activePlayerName: ''
+            activePlayerSeat: packet.seat
         });
     }
 });
@@ -122,6 +140,13 @@ socket.on('server_request_check', (packet) => {
 // Server requests call/raise/fold/allin
 socket.on('server_request_call', (packet) => {
     console.log('Action requested - Call scenario:', packet);
+    
+    // Validate packet structure
+    if (!packet.game_id || !packet.player_id || packet.seat === undefined) {
+        console.error('Invalid server_request_call packet:', packet);
+        return;
+    }
+    
     currentGameId = packet.game_id;
     
     if (packet.player_id === currentPlayerId && window.pokerGameInstance) {
@@ -139,7 +164,7 @@ socket.on('server_request_call', (packet) => {
             toCall: packet.to_call,
             minRaise: packet.min_raise,
             maxRaise: getPlayerChips(),
-            activePlayerName: ''
+            activePlayerSeat: packet.seat
         });
     }
 });
@@ -163,8 +188,9 @@ socket.on('gamestate', (packet) => {
 socket.on('gamestate_bet', (packet) => {
     console.log('Bet update:', packet);
     if (window.pokerGameInstance) {
-        // Server handles all state, just trigger a state refresh request
-        socket.emit('request_game_state', { game_id: currentGameId });
+        // Thin client: Let server handle all state logic
+        // Request fresh game state instead of managing updates client-side
+        requestGameState();
     }
 });
 
@@ -190,8 +216,8 @@ socket.on('server_update_last_action', (packet) => {
 socket.on('server_update_stage_progression', (packet) => {
     console.log('Stage progression:', packet);
     if (window.pokerGameInstance) {
-        // Server manages all logic, request fresh game state
-        socket.emit('request_game_state', { game_id: currentGameId });
+        // Thin client: Server manages all logic, request fresh game state
+        requestGameState();
     }
 });
 
@@ -231,6 +257,48 @@ socket.on('action_response', (packet) => {
 
 // Expose socket globally so pokergame.js can use it
 window.socket = socket;
+
+// ═══════════════════════════════════════════════════════════════════
+// THIN CLIENT COMMUNICATION HELPERS
+// ═══════════════════════════════════════════════════════════════════
+
+/**
+ * Request current game state from server
+ */
+function requestGameState() {
+    if (currentGameId) {
+        const packet = {
+            type: 'request_game_state',
+            game_id: currentGameId,
+            player_id: currentPlayerId,
+            timestamp: new Date()
+        };
+        socket.emit('request_game_state', packet);
+    }
+}
+
+/**
+ * Send structured message using schema
+ */
+function sendMessage(type, data) {
+    try {
+        // Validate data using schema if available
+        if (window.PackageType && window.PackageType[type]) {
+            socket.emit(window.PackageType[type], data);
+        } else {
+            socket.emit(type, data);
+        }
+    } catch (error) {
+        console.error('Error sending message:', error);
+        if (window.pokerGameInstance) {
+            window.pokerGameInstance.setError('Communication error - please try again');
+        }
+    }
+}
+
+// Expose helper functions globally
+window.requestGameState = requestGameState;
+window.sendMessage = sendMessage;
 
 // ═══════════════════════════════════════════════════════════════════
 // PLAYER ACTIONS - Handled via API calls (removed socket emissions)
@@ -288,22 +356,16 @@ function displayPlayerMessage(fromPlayerId, message) {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// THIN CLIENT HELPER FUNCTIONS
+// THIN CLIENT DATA HELPERS
 // ═══════════════════════════════════════════════════════════════════
 
-// Simple helper functions for socket communication
+// Simplified helper functions focusing on data retrieval only
 function getCurrentPlayerSeat() {
-    if (window.pokerGameInstance?.myPlayer?.seat_number) {
-        return window.pokerGameInstance.myPlayer.seat_number;
-    }
-    return currentPlayerSeat || 1;
+    return window.pokerGameInstance?.myPlayer?.seat_number || currentPlayerSeat || 1;
 }
 
 function getCurrentBet() {
-    if (window.pokerGameInstance?.game?.current_bet) {
-        return window.pokerGameInstance.game.current_bet;
-    }
-    return gameState ? gameState.current_bet : 0;
+    return window.pokerGameInstance?.game?.current_bet || gameState?.current_bet || 0;
 }
 
 function getPlayerChips() {
@@ -312,9 +374,9 @@ function getPlayerChips() {
         return player.chips_end || player.chips_start || 0;
     }
     
-    if (gameState && gameState.aggrounds) {
+    if (gameState?.aggrounds) {
         const player = gameState.aggrounds.find(p => p.seat === getCurrentPlayerSeat());
-        return player ? player.chips : 0;
+        return player?.chips || 0;
     }
     return 0;
 }

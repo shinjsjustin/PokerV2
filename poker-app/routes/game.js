@@ -3,7 +3,8 @@ const jwt = require('jsonwebtoken');
 const express = require('express');
 const router = express.Router();
 const gameSocketManager = require('../server-sockets/gamesockets');
-const { 
+const tableSocketManager = require('../server-sockets/tablesockets');
+const {
     createFromJSON,
     GameState,
     ServerRequestCall,
@@ -13,9 +14,11 @@ const {
     ServerUpdateLastAction,
     ServerUpdateStageProgression,
     ServerUpdateGameEnd,
- } = require('../datapacks/schema');
+    PlayerAction,
+    PackageType
+} = require('../datapacks/schema');
 
- const { updateGameStateWithNewBet } = require('../engine/gamelogic');
+const { updateGameStateWithNewBet, getNextRequest, determineWinner } = require('../engine/gamelogic');
 
 // Middleware to verify JWT token
 const authenticateToken = (req, res, next) => {
@@ -35,7 +38,7 @@ const authenticateToken = (req, res, next) => {
     });
 };
 
-// TODO: double check this
+// Get game state - supports both game_id and table_id queries
 router.get('/', authenticateToken, async (req, res) => {
     try {
         const { game_id, table_id } = req.query;
@@ -49,18 +52,18 @@ router.get('/', authenticateToken, async (req, res) => {
 
         if (game_id) {
             query = `
-                SELECT game_id, table_id, pot, community_cards, stage, dealer_seat, hot_seat, aggrounds, current_bet, bets, deck
-                FROM games
+                SELECT game_id, table_id, pot, community_cards, stage, dealer_seat, hot_seat, aggrounds, current_bet, bets, deck, max_players
+                FROM gamestate
                 WHERE game_id = ?
             `;
             values = [game_id];
         } else {
             // Get the most recent active game for the table
             query = `
-                SELECT game_id, table_id, pot, community_cards, stage, dealer_seat, hot_seat, aggrounds, current_bet, bets, deck
-                FROM games
+                SELECT game_id, table_id, pot, community_cards, stage, dealer_seat, hot_seat, aggrounds, current_bet, bets, deck, max_players
+                FROM gamestate
                 WHERE table_id = ? AND stage != 'game_over'
-                ORDER BY started_at DESC
+                ORDER BY created_at DESC
                 LIMIT 1
             `;
             values = [table_id];
@@ -72,7 +75,22 @@ router.get('/', authenticateToken, async (req, res) => {
             return res.status(404).json({ message: 'Game not found' });
         }
 
-        res.json(result[0]);
+        const gameData = result[0];
+        // Parse JSON fields if they exist
+        if (gameData.community_cards && typeof gameData.community_cards === 'string') {
+            gameData.community_cards = JSON.parse(gameData.community_cards);
+        }
+        if (gameData.aggrounds && typeof gameData.aggrounds === 'string') {
+            gameData.aggrounds = JSON.parse(gameData.aggrounds);
+        }
+        if (gameData.bets && typeof gameData.bets === 'string') {
+            gameData.bets = JSON.parse(gameData.bets);
+        }
+        if (gameData.deck && typeof gameData.deck === 'string') {
+            gameData.deck = JSON.parse(gameData.deck);
+        }
+
+        res.json(gameData);
     } catch (error) {
         console.error('Error fetching game:', error);
         res.status(500).json({ message: 'Failed to fetch game' });
@@ -87,13 +105,19 @@ router.post('/', authenticateToken, async (req, res) => {
         if (!table_id) {
             return res.status(400).json({ message: 'table_id is required' });
         }
+        // Fetch table to get max_players
+        const [tableRows] = await db.execute(`SELECT max_players FROM tables WHERE table_id = ?`, [table_id]);
+        if (tableRows.length === 0) {
+            return res.status(404).json({ message: 'Table not found' });
+        }
+        const max_players = tableRows[0].max_players;
 
         const query = `
-            INSERT INTO gamestate (table_id, pot, stage, dealer_seat)
-            VALUES (?, 0, 'waiting', ?)
+            INSERT INTO gamestate (table_id, pot, stage, dealer_seat, max_players)
+            VALUES (?, 0, 'waiting', ?, ?)
         `;
 
-        const [result] = await db.execute(query, [table_id, dealer_seat || 0]);
+        const [result] = await db.execute(query, [table_id, dealer_seat || 0, max_players]);
 
         res.status(201).json({
             message: 'Game created successfully',
@@ -102,131 +126,6 @@ router.post('/', authenticateToken, async (req, res) => {
     } catch (error) {
         console.error('Error creating game:', error);
         res.status(500).json({ message: 'Failed to create game' });
-    }
-});
-
-router.put('/raise', authenticateToken, async (req, res) => {
-    try{
-        const { game_id, seat, current_bet, player_bet, allin } = req.body;
-        if (!game_id || seat === undefined || current_bet === undefined || player_bet === undefined || allin === undefined){
-            return res.status(400).json({ message: 'Missing required fields' });
-        }
-
-        const newAction = new PlayerAction({game_id, seat, current_bet, player_bet, allin});
-        // Fetch current game state for last action comparison
-        const [gameRows] = await db.execute(`
-                SELECT g.game_id, g.table_id, g.dealer_seat, g.hot_seat, g.stage, 
-                       g.aggrounds, g.pot, g.current_bet, g.bets, g.community_cards, g.deck
-                FROM gamestate g
-                WHERE g.game_id = ?
-            `, [game_id]);
-        if (gameRows.length === 0){
-            return res.status(404).json({ message: 'Game not found' });
-        }
-        const og = gameRows[0];
-        const oldGameState = createFromJSON(og);
-        const {gameState, proceedResult, lastAction} = updateGameStateWithNewBet(oldGameState, newAction);
-        // TODO FINISH
-    } catch (error){
-        console.error('Error processing raise action:', error);
-        res.status(500).json({ message: 'Failed to process raise action' });
-    }
-});
-
-// PUT /games - Update game by game_id or table_id
-// Can update: pot, community_cards, stage, active_seat, dealer_seat
-router.put('/', authenticateToken, async (req, res) => {
-    try {
-        const { game_id, table_id, dealer_seat, hot_seat, stage, aggrounds, pot, current_bet, bets, community_cards, deck } = req.body;
-
-        if (!game_id && !table_id) {
-            return res.status(400).json({ message: 'game_id or table_id is required' });
-        }
-        const newGameState = new GameState({
-            game_id,
-            table_id,
-            dealer_seat,
-            hot_seat,
-            stage,
-            aggrounds,
-            pot,
-            current_bet,
-            bets,
-            community_cards,
-            deck
-        });
-        // Fetch current game state for last action comparison
-        const [gameRows] = await db.execute(`
-                SELECT g.game_id, g.table_id, g.dealer_seat, g.hot_seat, g.stage, 
-                       g.aggrounds, g.pot, g.current_bet, g.bets, g.community_cards, g.deck
-                FROM gamestate g
-                WHERE g.game_id = ?
-            `, [game_id]);
-        const og = gameRows[0];
-        const oldGameState = createFromJSON(og);
-        // Check last action and broadcast to table
-        const lastActionPacket = checkLastAction(oldGameState, newGameState);
-        gameSocketManager.sendLastAction(table_id, lastActionPacket);
-
-
-        // UPDATE
-        // Build dynamic update query based on provided fields
-        const updates = [];
-        const values = [];
-
-        if (pot !== undefined) {
-            updates.push('pot = ?');
-            values.push(pot);
-        }
-        if (community_cards !== undefined) {
-            updates.push('community_cards = ?');
-            values.push(JSON.stringify(community_cards));
-        }
-        if (stage !== undefined) {
-            updates.push('stage = ?');
-            values.push(stage);
-        }
-        if (hot_seat !== undefined) {
-            updates.push('hot_seat = ?');
-            values.push(hot_seat);
-        }
-        if (dealer_seat !== undefined) {
-            updates.push('dealer_seat = ?');
-            values.push(dealer_seat);
-        }
-        if (deck !== undefined) {
-            updates.push('deck = ?');
-            values.push(JSON.stringify(deck));
-        }
-
-        if (updates.length === 0) {
-            return res.status(400).json({ message: 'No fields to update' });
-        }
-
-        let query;
-
-        if (game_id) {
-            query = `UPDATE gamestate SET ${updates.join(', ')} WHERE game_id = ?`;
-            values.push(game_id);
-        } else {
-            // Update the most recent active game for the table
-            query = `UPDATE gamestate SET ${updates.join(', ')} WHERE table_id = ? AND ended_at IS NULL ORDER BY started_at DESC LIMIT 1`;
-            values.push(table_id);
-        }
-
-        const [result] = await db.execute(query, values);
-
-        if (result.affectedRows === 0) {
-            return res.status(404).json({ message: 'Game not found' });
-        }
-
-        //Logic for next operation
-        
-
-        res.json({ message: 'Game updated successfully' });
-    } catch (error) {
-        console.error('Error updating game:', error);
-        res.status(500).json({ message: 'Failed to update game' });
     }
 });
 
@@ -281,15 +180,208 @@ router.delete('/', authenticateToken, async (req, res) => {
     }
 });
 
-//TODO: Add endpoints for player actions (bet, call, fold, check) that also broadcast to table via sockets
+// Process player action and broadcast to table via sockets
 router.post('/action', authenticateToken, async (req, res) => {
     try {
-        const { game_id, player_id, action, amount } = req.body;
+        const { game_id, seat, current_bet, player_bet, allin } = req.body;
+        const playerId = req.user.playerId;
 
-        
+        // Validate required fields
+        if (!game_id || seat === undefined || current_bet === undefined || player_bet === undefined) {
+            return res.status(400).json({ message: 'Missing required action parameters' });
+        }
+
+        const newAction = new PlayerAction({ game_id, seat, current_bet, player_bet, allin });
+        console.log('Processing player action:', newAction);
+
+        // Fetch current game state 
+        const [gameRows] = await db.execute(`
+            SELECT g.game_id, g.table_id, g.dealer_seat, g.hot_seat, g.stage, g.max_players,
+                   g.aggrounds, g.pot, g.current_bet, g.bets, g.community_cards, g.deck
+            FROM gamestate g
+            WHERE g.game_id = ?
+        `, [game_id]);
+
+        if (gameRows.length === 0) {
+            return res.status(404).json({ message: 'Game not found' });
+        }
+
+        const gameRow = gameRows[0];
+
+        // Parse JSON fields for game state
+        const oldGameStateData = {
+            ...gameRow,
+            aggrounds: typeof gameRow.aggrounds === 'string' ? JSON.parse(gameRow.aggrounds) : gameRow.aggrounds,
+            bets: typeof gameRow.bets === 'string' ? JSON.parse(gameRow.bets) : gameRow.bets,
+            community_cards: typeof gameRow.community_cards === 'string' ? JSON.parse(gameRow.community_cards) : gameRow.community_cards,
+            deck: typeof gameRow.deck === 'string' ? JSON.parse(gameRow.deck) : gameRow.deck
+        };
+
+        const oldGameState = new GameState(oldGameStateData);
+
+        // Process the action with game engine
+        const { gameState, proceedResult, lastAction } = updateGameStateWithNewBet(oldGameState, newAction);
+
+        // Start database transaction
+        await db.query('START TRANSACTION');
+
+        try {
+            // Update game state in database
+            const updateQuery = `
+                UPDATE gamestate 
+                SET pot = ?, current_bet = ?, aggrounds = ?, stage = ?, hot_seat = ?, 
+                    bets = ?, community_cards = ?, deck = ?, max_players = ?
+                WHERE game_id = ?
+            `;
+
+            await db.execute(updateQuery, [
+                gameState.pot,
+                gameState.current_bet,
+                JSON.stringify(gameState.aggrounds),
+                gameState.stage,
+                gameState.hot_seat,
+                JSON.stringify(gameState.bets),
+                JSON.stringify(gameState.community_cards),
+                JSON.stringify(gameState.deck),
+                gameState.max_players,
+                game_id
+            ]);
+
+            // Commit database changes
+            await db.query('COMMIT');
+
+            // Broadcast action to table via sockets
+            if (lastAction) {
+                gameSocketManager.sendLastAction(gameState.table_id, {
+                    game_id: game_id,
+                    seat: seat,
+                    bet_amount: lastAction.bet_amount || 0,
+                    allin: lastAction.allin || false,
+                    folded: lastAction.folded || false
+                });
+            }
+
+            // Send success response to acting player
+            const playerSocket = tableSocketManager.getSocket(playerId);
+            if (playerSocket) {
+                gameSocketManager.sendActionResponse(playerSocket, true, null, game_id, playerId);
+            }
+
+            res.json({
+                success: true,
+                message: 'Action processed successfully',
+                gameState: gameState
+            });
+
+            // -- Game Progression --
+            if (proceedResult === 1) {
+                gameSocketManager.sendStageProgression(gameState.table_id, {
+                    game_id: game_id,
+                    stage: gameState.stage,
+                    community_cards: gameState.community_cards
+                });
+            }
+            if (proceedResult === 0 || proceedResult === 1) {
+                const nextRequest = getNextRequest(gameState);
+                if (nextRequest.type === PackageType.SERVER_REQUEST_CALL) {
+                    gameSocketManager.requestCall(tableSocketManager.getSocket(playerId), {
+                        game_id: game_id,
+                        player_id: playerId,
+                        seat: nextRequest.seat,
+                        min_raise: nextRequest.min_raise,
+                        to_call: nextRequest.to_call
+                    });
+                } else if (nextRequest.type === PackageType.SERVER_REQUEST_CHECK) {
+                    gameSocketManager.requestCheck(tableSocketManager.getSocket(playerId), {
+                        game_id: game_id,
+                        player_id: playerId,
+                        seat: nextRequest.seat,
+                        min_raise: nextRequest.min_raise
+                    });
+                } else {
+                    console.error('Invalid next request type:', nextRequest.type);
+                }
+            }
+            if (proceedResult === -1) {
+                const seatsInGame = gameState.bets.filter(b => !b.folded).map(b => b.seat);
+                // fetch hole cards from remaining players in game for showdown
+                const [playerRows] = await db.execute(`
+                        SELECT player_id, hole_cards 
+                        FROM players 
+                        WHERE game_id = ? AND seat IN (${seatsInGame.join(',')})
+                    `, [game_id]);
+                const playerCards = playerRows.map(row => ({
+                    player_id: row.player_id,
+                    hole_cards: JSON.parse(row.hole_cards)
+                }));
+                const winners = determineWinner(playerCards, gameState.community_cards);
+                gameSocketManager.sendGameEnd(gameState.table_id, {
+                    game_id: game_id,
+                    winners: winners,
+                    pot: gameState.pot
+                });
+
+                // TODO: reset game state for new game after some delay, or wait for client to trigger new game creation
+            }
+        } catch (dbError) {
+            await db.query('ROLLBACK');
+            throw dbError;
+        }
+
     } catch (error) {
         console.error('Error processing player action:', error);
+
+        // Send error to player via socket
+        const playerId = req.user?.playerId;
+        if (playerId) {
+            const playerSocket = tableSocketManager.getSocket(playerId);
+            if (playerSocket) {
+                gameSocketManager.sendError(playerSocket, 'Failed to process action', req.body.game_id, playerId);
+            }
+        }
+
         res.status(500).json({ message: 'Failed to process player action' });
+    }
+});
+
+// Request specific player to take action (used by game engine)
+router.post('/request-action', authenticateToken, async (req, res) => {
+    try {
+        const { game_id, player_id, seat, action_type, min_raise, to_call } = req.body;
+
+        if (!game_id || !player_id || seat === undefined || !action_type) {
+            return res.status(400).json({ message: 'Missing required parameters' });
+        }
+
+        const playerSocket = tableSocketManager.getSocket(player_id);
+        if (!playerSocket) {
+            return res.status(404).json({ message: 'Player not connected' });
+        }
+
+        if (action_type === 'check') {
+            gameSocketManager.requestCheck(playerSocket, {
+                game_id,
+                player_id,
+                seat,
+                min_raise: min_raise || 0
+            });
+        } else if (action_type === 'call') {
+            gameSocketManager.requestCall(playerSocket, {
+                game_id,
+                player_id,
+                seat,
+                min_raise: min_raise || 0,
+                to_call: to_call || 0
+            });
+        } else {
+            return res.status(400).json({ message: 'Invalid action type' });
+        }
+
+        res.json({ message: 'Action request sent successfully' });
+
+    } catch (error) {
+        console.error('Error requesting player action:', error);
+        res.status(500).json({ message: 'Failed to request player action' });
     }
 });
 module.exports = router;

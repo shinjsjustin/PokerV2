@@ -2,7 +2,8 @@ const {
     PackageType,
     ServerToPlayerMessage, 
     ServerToTableMessage, 
-    PlayerToPlayerMessage 
+    PlayerToPlayerMessage,
+    createFromJSON
 } = require('../datapacks/schema');
 
 /**
@@ -259,15 +260,67 @@ class TableSocketManager {
             }
         });
 
-        // Handle player-to-player messages
+        // Handle player-to-player messages (with schema validation)
         socket.on(PackageType.PLAYER_TO_PLAYER_MESSAGE, (data) => {
-            this.sendPlayerToPlayer(playerId, data.to_player_id, data.message);
+            try {
+                // Validate using schema
+                const packet = createFromJSON(data);
+                if (packet.from_player_id === playerId) {
+                    this.sendPlayerToPlayer(playerId, packet.to_player_id, packet.message);
+                }
+            } catch (error) {
+                console.error('Invalid player-to-player message:', error);
+            }
         });
 
-        // Handle player-to-table messages (chat)
+        // Handle player-to-table messages (chat) with validation
         socket.on('player_table_chat', (data) => {
-            this.sendPlayerToTable(playerId, data.message);
+            if (data && typeof data.message === 'string') {
+                this.sendPlayerToTable(playerId, data.message);
+            } else {
+                console.error('Invalid player table chat message:', data);
+            }
         });
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // Schema Validation Helpers
+    // ═══════════════════════════════════════════════════════════════════
+
+    /**
+     * Validate and emit a packet using schema
+     */
+    emitValidatedPacket(socket, packet) {
+        try {
+            if (packet && packet.type) {
+                socket.emit(packet.type, packet);
+                return true;
+            } else {
+                console.error('Invalid packet structure:', packet);
+                return false;
+            }
+        } catch (error) {
+            console.error('Error emitting packet:', error);
+            return false;
+        }
+    }
+
+    /**
+     * Broadcast validated packet to table
+     */
+    broadcastValidatedPacket(tableId, packet) {
+        try {
+            if (packet && packet.type) {
+                this.io.to(`table:${tableId}`).emit(packet.type, packet);
+                return true;
+            } else {
+                console.error('Invalid packet structure:', packet);
+                return false;
+            }
+        } catch (error) {
+            console.error('Error broadcasting packet:', error);
+            return false;
+        }
     }
 }
 

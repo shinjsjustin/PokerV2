@@ -23,6 +23,11 @@ const Codewords = {
     PLAYER_ACTION_CHECK : 'player_action_check',
     PLAYER_ACTION_ALLIN : 'player_action_allin',
 
+    // Error handling
+    ERROR_MESSAGE : 'error_message',
+    ACTION_RESPONSE : 'action_response',
+    REQUEST_GAME_STATE : 'request_game_state',
+
     // Helper packages
     GAMESTATE_BET : 'gamestate_bet',
     TABLE_SEATS : 'table_seats',
@@ -63,9 +68,10 @@ class PlayerToPlayerMessage {
 // Server Requests
 // ═══════════════════════════════════════════════════════════════════
 class ServerRequestCheck {
-    constructor ({game_id, seat, min_raise}){
+    constructor ({game_id, player_id, seat, min_raise}){
         this.type = Codewords.SERVER_REQUEST_CHECK;
         this.game_id = game_id;
+        this.player_id = player_id;
         this.seat = seat;
         this.min_raise = min_raise;
         this.actions = ["check", "raise", "allin"];
@@ -73,9 +79,10 @@ class ServerRequestCheck {
 }
 
 class ServerRequestCall {
-    constructor ({game_id, seat, min_raise, to_call}){
+    constructor ({game_id, player_id, seat, min_raise, to_call}){
         this.type = Codewords.SERVER_REQUEST_CALL;
         this.game_id = game_id;
+        this.player_id = player_id;
         this.seat = seat;
         this.min_raise = min_raise;
         this.to_call = to_call;
@@ -115,11 +122,12 @@ class PlayerAction {
 // GAME 
 // ═══════════════════════════════════════════════════════════════════
 class GameState {
-    constructor ({game_id, table_id, dealer_seat, hot_seat, stage, aggrounds, pot, current_bet, bets, community_cards, deck}){
+    constructor ({game_id, table_id, dealer_seat, max_players, hot_seat, stage, aggrounds, pot, current_bet, bets, community_cards, deck}){
         this.type = Codewords.GAMESTATE;
         this.game_id = game_id;
         this.table_id = table_id;
         this.dealer_seat = dealer_seat;
+        this.max_players = max_players;
         this.hot_seat = hot_seat;
         this.stage = stage; // pre-flop, flop, turn, river
         this.aggrounds = aggrounds; // array of {player_id, seat, hole_cards}
@@ -182,6 +190,39 @@ class ServerUpdateGameEnd {
 }
 
 // ═══════════════════════════════════════════════════════════════════
+// Error Handling & Communication
+// ═══════════════════════════════════════════════════════════════════
+class ErrorMessage {
+    constructor ({message, game_id = null, player_id = null}){
+        this.type = Codewords.ERROR_MESSAGE;
+        this.message = message;
+        this.game_id = game_id;
+        this.player_id = player_id;
+        this.timestamp = new Date();
+    }
+}
+
+class ActionResponse {
+    constructor ({success, error = null, game_id = null, player_id = null}){
+        this.type = Codewords.ACTION_RESPONSE;
+        this.success = success;
+        this.error = error;
+        this.game_id = game_id;
+        this.player_id = player_id;
+        this.timestamp = new Date();
+    }
+}
+
+class RequestGameState {
+    constructor ({game_id, player_id = null}){
+        this.type = Codewords.REQUEST_GAME_STATE;
+        this.game_id = game_id;
+        this.player_id = player_id;
+        this.timestamp = new Date();
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // Misc
 // ═══════════════════════════════════════════════════════════════════
 
@@ -208,6 +249,12 @@ function createFromJSON(json){
             return new ServerUpdateStageProgression(data);
         case Codewords.SERVER_UPDATE_GAME_END:
             return new ServerUpdateGameEnd(data);
+        case Codewords.ERROR_MESSAGE:
+            return new ErrorMessage(data);
+        case Codewords.ACTION_RESPONSE:
+            return new ActionResponse(data);
+        case Codewords.REQUEST_GAME_STATE:
+            return new RequestGameState(data);
         case Codewords.PLAYER_ACTION_CALL:
         case Codewords.PLAYER_ACTION_FOLD:
         case Codewords.PLAYER_ACTION_RAISE:
@@ -232,5 +279,8 @@ module.exports = {
     ServerUpdateLastAction,
     ServerUpdateStageProgression,
     ServerUpdateGameEnd,
+    ErrorMessage,
+    ActionResponse,
+    RequestGameState,
     createFromJSON
 }
