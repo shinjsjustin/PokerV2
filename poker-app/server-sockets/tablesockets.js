@@ -72,11 +72,15 @@ class TableSocketManager {
     joinTable(playerId, tableId) {
         const pid = Number(playerId);
         const socket = this.getSocket(pid);
-        if (!socket) return false;
+        if (!socket) {
+            console.error(`Cannot join table ${tableId}: No socket found for player ${pid}`);
+            return false;
+        }
 
         // Leave current table if in one
         const currentTable = this.playerTables.get(pid);
         if (currentTable) {
+            console.log(`Player ${pid} leaving table ${currentTable} to join ${tableId}`);
             this.leaveTable(pid, currentTable);
         }
 
@@ -88,6 +92,8 @@ class TableSocketManager {
             this.tables.set(tableId, new Set());
         }
         this.tables.get(tableId).add(pid);
+
+        console.log(`Player ${pid} successfully joined table ${tableId} room. Table now has ${this.tables.get(tableId).size} players.`);
 
         // Notify table of new player
         this.sendToTable(tableId, `Player ${pid} has joined the table`);

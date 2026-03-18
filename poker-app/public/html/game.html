@@ -79,7 +79,7 @@
       </div>
 
       <!-- ② Player list -->
-      <div class="section" x-show="game?.players?.length > 0">
+      <div class="section" x-show="!loading && !error && game && game.players && game.players.length > 0">
         <div class="label">players</div>
         <div class="players-list">
           <template x-for="p in game.players" :key="p.player_id">
@@ -100,7 +100,7 @@
                   <span class="badge badge-bb" x-show="p.seat_number === game.bbSeat">BB</span>
                   <span class="badge badge-ai" x-show="p.is_all_in && !p.is_folded">all-in</span>
                 </div>
-                <div class="player-chips" x-text="(p.chips_end || p.chips_start || 0).toLocaleString() + ' chips'"></div>
+                <div class="player-chips" x-text="(p.chip_balance || p.chips_end || p.chips_start || 0).toLocaleString() + ' chips'"></div>
               </div>
 
               <!-- Their hole cards (face-down unless showdown or it's you) -->
@@ -130,7 +130,7 @@
       </div>
 
       <!-- ③ Your hand (only shown when you're in the hand) -->
-      <div class="section" x-show="myPlayer && !myPlayer.is_folded">
+      <div class="section" x-show="!loading && !error && game && game.players && myPlayerId && myPlayer && !myPlayer.is_folded">
         <div class="label">your hand</div>
         <div class="hand-row">
           <template x-if="myPlayer?.hole_cards">
@@ -149,7 +149,7 @@
           <div class="bet-summary">
             <span>current bet: <strong x-text="myPlayer.current_bet || 0"></strong></span>
             <span>to call: <strong x-text="toCall"></strong></span>
-            <span>stack: <strong x-text="(myPlayer.chips_end || myPlayer.chips_start || 0).toLocaleString()"></strong></span>
+            <span>stack: <strong x-text="(myPlayer.chip_balance || myPlayer.chips_end || myPlayer.chips_start || 0).toLocaleString()"></strong></span>
           </div>
         </template>
       </div>
@@ -172,12 +172,12 @@
           <label>raise to</label>
           <input type="range"
                  :min="minRaise"
-                 :max="myPlayer ? (myPlayer.chips_end || myPlayer.chips_start || 0) : 0"
+                 :max="myPlayer ? (myPlayer.chip_balance || myPlayer.chips_end || myPlayer.chips_start || 0) : 0"
                  x-model.number="raiseAmount"
                  step="10" />
           <input type="number"
                  :min="minRaise"
-                 :max="myPlayer ? (myPlayer.chips_end || myPlayer.chips_start || 0) : 0"
+                 :max="myPlayer ? (myPlayer.chip_balance || myPlayer.chips_end || myPlayer.chips_start || 0) : 0"
                  x-model.number="raiseAmount"
                  step="10" />
           <button class="raise-confirm" @click="act('raise')" :disabled="actionInProgress">confirm ↑</button>

@@ -54,6 +54,13 @@ class GameSocketManager {
      */
     sendGameState(tableId, gameStateData) {
         const packet = new GameState(gameStateData);
+        console.log(`Broadcasting game state to table ${tableId}:`, {
+            game_id: packet.game_id,
+            stage: packet.stage,
+            pot: packet.pot,
+            community_cards: packet.community_cards,
+            players_count: packet.players?.length || 0
+        });
         this.io.to(`table:${tableId}`).emit(PackageType.GAMESTATE, packet);
     }
 
@@ -78,6 +85,12 @@ class GameSocketManager {
      */
     sendStageProgression(tableId, { game_id, stage, community_cards }) {
         const packet = new ServerUpdateStageProgression({ game_id, stage, community_cards });
+        console.log(`Broadcasting stage progression to table ${tableId}:`, {
+            game_id,
+            stage,
+            community_cards: community_cards ? community_cards.length : 0,
+            event: PackageType.SERVER_UPDATE_STAGE_PROGRESSION
+        });
         this.io.to(`table:${tableId}`).emit(PackageType.SERVER_UPDATE_STAGE_PROGRESSION, packet);
     }
 
@@ -191,7 +204,9 @@ class GameSocketManager {
      * Handle incoming game state requests
      */
     setupListener(socket, onGameStateRequest) {
+        console.log('Setting up game socket listener for request_game_state events');
         socket.on(PackageType.REQUEST_GAME_STATE, (data) => {
+            console.log('Received game state request:', data);
             if (onGameStateRequest && typeof onGameStateRequest === 'function') {
                 onGameStateRequest(data, socket);
             }

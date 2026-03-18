@@ -53,6 +53,72 @@ io.on('connection', (socket) => {
   // Player registers after authenticating on client side
   socket.on('register_player', (playerId) => {
     tableSocketManager.setupListeners(socket, playerId);
+    
+    // Setup game socket listener for game state requests
+    gameSocketManager.setupListener(socket, async (data, requestSocket) => {
+      console.log('Game state requested:', data);
+      
+      if (data && data.game_id) {
+        try {
+          // Fetch current game state from database
+          const [gameRows] = await require('./db/db').execute(`
+            SELECT g.*, t.name as table_name, t.small_blind
+            FROM gamestate g
+            JOIN tables t ON g.table_id = t.table_id
+            WHERE g.game_id = ?
+          `, [data.game_id]);
+          
+          if (gameRows.length > 0) {
+            const game = gameRows[0];
+            const bets = typeof game.bets === 'string' ? JSON.parse(game.bets) : (game.bets || []);
+            const communityCards = typeof game.community_cards === 'string' ? JSON.parse(game.community_cards) : (game.community_cards || []);
+            
+            // Get players for this game
+            const [playerRows] = await require('./db/db').execute(`
+              SELECT player_id, username, seat_number, chip_balance, current_bet
+              FROM players
+              WHERE game_id = ?
+              ORDER BY seat_number
+            `, [data.game_id]);
+            
+            const gameStateData = {
+              game_id: game.game_id,
+              table_id: game.table_id,
+              tableName: game.table_name,
+              smallBlind: game.small_blind,
+              bigBlind: game.big_blind,
+              pot: game.pot,
+              current_bet: game.current_bet,
+              stage: game.stage,
+              dealerSeat: game.dealer_seat,
+              activePlayerId: playerRows.find(p => p.seat_number === game.hot_seat)?.player_id || null,
+              community_cards: communityCards,
+              players: playerRows.map(p => {
+                const bet = bets.find(b => b.seat === p.seat_number) || {};
+                return {
+                  player_id: p.player_id,
+                  username: p.username,
+                  seat_number: p.seat_number,
+                  chip_balance: p.chip_balance,
+                  current_bet: bet.bet_amount || 0,
+                  is_folded: bet.folded || false,
+                  is_all_in: bet.allin || false,
+                  hole_cards: null // Don't expose hole cards in broadcast
+                };
+              })
+            };
+            
+            // Send game state to requesting player
+            gameSocketManager.sendGameStateToPlayer(requestSocket, gameStateData);
+            console.log(`Sent game state for game ${data.game_id} to player ${data.player_id || 'unknown'}`);
+          }
+        } catch (error) {
+          console.error('Error handling game state request:', error);
+          gameSocketManager.sendError(requestSocket, 'Failed to fetch game state', data.game_id, data.player_id);
+        }
+      }
+    });
+    
     console.log(`Player ${playerId} registered with socket ${socket.id}`);
   });
   

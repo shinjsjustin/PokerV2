@@ -118,14 +118,25 @@ function proceed(gameState) {
         gameState.aggrounds = 0;
     }
     
-    if (gameState.stage < 4) {
+    if (gameState.stage < 3) {
         gameState.stage += 1;
+        
+        // CRITICAL FIX: Reset current_bet to 0 for new betting round
+        console.log(`Stage progression: stage ${gameState.stage - 1} -> ${gameState.stage}, resetting current_bet from ${gameState.current_bet} to 0`);
+        gameState.current_bet = 0;
+        
+        // Reset aggrounds to number of active players for new betting round
+        gameState.aggrounds = activeSeats.length;
+        console.log(`New betting round: aggrounds set to ${gameState.aggrounds} (${activeSeats.length} active players)`);
+        
         // First active player after dealer acts first
         const dealerSeat = gameState.dealer_seat;
         const nextSeat = activeSeats.find(s => s > dealerSeat) || activeSeats[0];
         gameState.hot_seat = nextSeat;
+        console.log(`Hot seat for new round: ${nextSeat} (dealer: ${dealerSeat})`);
         return 0;
     } else {
+        console.log('Game ending: reached final stage', gameState.stage);
         return -1;
     }
 }
@@ -246,9 +257,18 @@ function getNextRequest(gameState) {
     }
     // Ensure to_call is never negative (player may have matched/exceeded current bet)
     const toCall = Math.max(0, gameState.current_bet - hotSeatBet.bet_amount);
-    // Min raise is the big blind or the current bet, whichever is larger
-    const minRaiseAmount = Math.max(gameState.big_blind, gameState.current_bet);
-    let minRaise = minRaiseAmount + gameState.current_bet - hotSeatBet.bet_amount;
+    // FIXED: Min raise calculation for after stage progression
+    // When current_bet = 0 (after stage progression), min raise is just the big blind
+    // When current_bet > 0, min raise is current_bet + big_blind (standard poker rules)
+    let minRaise;
+    if (gameState.current_bet === 0) {
+        // New betting round after stage progression - min raise is the big blind
+        minRaise = gameState.big_blind;
+    } else {
+        // Ongoing betting round - min raise is current_bet + big_blind
+        minRaise = gameState.current_bet + gameState.big_blind;
+    }
+    
     if (toCall === 0) {
         return new ServerRequestCheck({
             game_id: gameState.game_id,

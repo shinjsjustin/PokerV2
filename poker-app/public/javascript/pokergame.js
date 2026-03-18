@@ -286,65 +286,76 @@ function pokerGame() {
     updateGameState(serverData) {
       console.log('Received game state from server:', serverData);
       
-      // Server provides fully computed game state - just display it
-      this.game = serverData;
-      this.gameId = serverData.game_id;
-      this.loading = false;
-      this.error = null;
-      
-      // Reset action state when game state updates
-      this.actionInProgress = false;
-      
-      // Handle pending action if this player needs to act (e.g., on page refresh)
-      // Use Number() to ensure consistent type comparison
-      const pendingPlayerId = serverData.pendingAction?.player_id;
-      const myId = Number(this.myPlayerId);
-      console.log('Checking pending action:', { pendingPlayerId, myId, hasPendingAction: !!serverData.pendingAction });
-      
-      if (serverData.pendingAction && Number(pendingPlayerId) === myId) {
-        const pending = serverData.pendingAction;
-        console.log('Restoring pending action on refresh:', pending);
+      // CRITICAL FIX: Preserve existing game state to prevent UI flicker
+      // Only update if we have valid data to prevent PLAYERS/YOUR HAND from hiding
+      if (serverData && typeof serverData === 'object') {
+        // Server provides fully computed game state - just display it
+        this.game = serverData;
+        this.gameId = serverData.game_id;
         
-        const isCheckRequest = pending.to_call === 0;
-        if (isCheckRequest) {
-          // Check scenario
-          this.updateActionOptions({
-            check: true,
-            raise: true,
-            allin: true,
-            minRaise: pending.min_raise
-          });
-        } else {
-          // Call scenario
-          this.updateActionOptions({
-            call: pending.to_call,
-            raise: true,
-            fold: true,
-            allin: true,
-            minRaise: pending.min_raise,
-            toCall: pending.to_call
-          });
+        // Never allow loading/error to show when we have valid game data
+        this.loading = false;
+        this.error = null;
+        
+        // Only reset action state for actual actions, not for general game state updates
+        // This prevents action UI from being cleared during stage progression
+        if (serverData.clearActions !== false) {
+          this.actionInProgress = false;
         }
         
-        // Get my player's chip balance for maxRaise
-        const myPlayer = serverData.players?.find(p => Number(p.player_id) === myId);
-        const myChips = myPlayer?.chip_balance || 0;
+        // Handle pending action if this player needs to act (e.g., on page refresh)
+        // Use Number() to ensure consistent type comparison
+        const pendingPlayerId = serverData.pendingAction?.player_id;
+        const myId = Number(this.myPlayerId);
+        console.log('Checking pending action:', { pendingPlayerId, myId, hasPendingAction: !!serverData.pendingAction });
         
-        // Find active player name from seat
-        const activePlayer = serverData.players?.find(p => p.seat_number === pending.seat);
-        const activePlayerName = activePlayer?.username || 'Unknown';
-        
-        this.updatePlayerState({
-          isMyTurn: true,
-          canRaise: true,
-          toCall: pending.to_call,
-          minRaise: pending.min_raise,
-          maxRaise: myChips,
-          activePlayerSeat: pending.seat,
-          activePlayerName: activePlayerName
-        });
+        if (serverData.pendingAction && Number(pendingPlayerId) === myId) {
+          const pending = serverData.pendingAction;
+          console.log('Restoring pending action on refresh:', pending);
+          
+          const isCheckRequest = pending.to_call === 0;
+          if (isCheckRequest) {
+            // Check scenario
+            this.updateActionOptions({
+              check: true,
+              raise: true,
+              allin: true,
+              minRaise: pending.min_raise
+            });
+          } else {
+            // Call scenario
+            this.updateActionOptions({
+              call: pending.to_call,
+              raise: true,
+              fold: true,
+              allin: true,
+              minRaise: pending.min_raise,
+              toCall: pending.to_call
+            });
+          }
+          
+          // Get my player's chip balance for maxRaise
+          const myPlayer = serverData.players?.find(p => Number(p.player_id) === myId);
+          const myChips = myPlayer?.chip_balance || 0;
+          
+          // Find active player name from seat
+          const activePlayer = serverData.players?.find(p => p.seat_number === pending.seat);
+          const activePlayerName = activePlayer?.username || 'Unknown';
+          
+          this.updatePlayerState({
+            isMyTurn: true,
+            canRaise: true,
+            toCall: pending.to_call,
+            minRaise: pending.min_raise,
+            maxRaise: myChips,
+            activePlayerSeat: pending.seat,
+            activePlayerName: activePlayerName
+          });
+        } else {
+          console.log('No pending action for this player. pendingAction:', serverData.pendingAction);
+        }
       } else {
-        console.log('No pending action for this player. pendingAction:', serverData.pendingAction);
+        console.warn('Invalid game state data received:', serverData);
       }
     },
 
@@ -407,10 +418,12 @@ function pokerGame() {
     },
 
     clearActionOptions() {
+      console.log('Clearing action options - preserving game state');
       this.actionOptions = null;
       this.isMyTurn = false;
       this.showRaise = false;
       this.actionInProgress = false;
+      // DO NOT reset this.game or player data - this was causing UI elements to hide
     },
 
     setError(errorMessage) {

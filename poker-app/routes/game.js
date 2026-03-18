@@ -370,15 +370,20 @@ router.post('/', authenticateToken, async (req, res) => {
             // Update players with game_id and hole cards, deduct blinds
             for (const player of playerRows) {
                 const holeCards = dealResult.playerCards[player.player_id];
+                console.log(`Storing hole cards for player ${player.player_id}:`, holeCards, 'type:', typeof holeCards, 'isArray:', Array.isArray(holeCards));
+                
                 const blindAmount = player.seat_number === sbSeat ? table.small_blind : 
                                    (player.seat_number === bbSeat ? table.big_blind : 0);
+                
+                const holeCardsJson = JSON.stringify(holeCards);
+                console.log(`JSON stringified hole cards for player ${player.player_id}:`, holeCardsJson);
                 
                 await db.execute(`
                     UPDATE players 
                     SET game_id = ?, hole_cards = ?, current_bet = ?,
                         chip_balance = chip_balance - ?
                     WHERE player_id = ?
-                `, [gameId, JSON.stringify(holeCards), blindAmount, blindAmount, player.player_id]);
+                `, [gameId, holeCardsJson, blindAmount, blindAmount, player.player_id]);
             }
 
             await db.query('COMMIT');
@@ -626,13 +631,51 @@ router.post('/action', authenticateToken, async (req, res) => {
                 gameState: gameState
             });
 
-            // -- Game Progression --
-            if (proceedResult === 1) {
-                gameSocketManager.sendStageProgression(gameState.table_id, {
+            // -- Game Progression (handle errors separately to avoid double response) --
+            try {
+                if (proceedResult === 1) {
+                    // Send stage progression notification
+                    gameSocketManager.sendStageProgression(gameState.table_id, {
+                        game_id: game_id,
+                        stage: gameState.stage,
+                        community_cards: gameState.community_cards
+                    });
+                    
+                    // CRITICAL: Send complete updated game state with community cards
+                    // Build game state data for broadcasting
+                    const [playersForBroadcast] = await db.execute(`
+                    SELECT player_id, username, seat_number, chip_balance, current_bet
+                    FROM players 
+                    WHERE game_id = ?
+                    ORDER BY seat_number
+                `, [game_id]);
+                
+                const gameStateForBroadcast = {
                     game_id: game_id,
+                    table_id: gameState.table_id,
+                    pot: gameState.pot,
+                    current_bet: gameState.current_bet,
                     stage: gameState.stage,
-                    community_cards: gameState.community_cards
-                });
+                    dealerSeat: gameState.dealer_seat,
+                    activePlayerId: null, // No active player during stage transition
+                    community_cards: gameState.community_cards,
+                    players: playersForBroadcast.map(p => {
+                        const bet = gameState.bets.find(b => b.seat === p.seat_number) || {};
+                        return {
+                            player_id: p.player_id,
+                            username: p.username,
+                            seat_number: p.seat_number,
+                            chip_balance: p.chip_balance,
+                            current_bet: bet.bet_amount || 0,
+                            is_folded: bet.folded || false,
+                            is_all_in: bet.allin || false,
+                            hole_cards: null // Don't expose hole cards in broadcast
+                        };
+                    })
+                };
+                
+                // Broadcast updated game state to all players at table
+                gameSocketManager.sendGameState(gameState.table_id, gameStateForBroadcast);
             }
             if (proceedResult === 0 || proceedResult === 1) {
                 const nextRequest = getNextRequest(gameState);
@@ -672,23 +715,108 @@ router.post('/action', authenticateToken, async (req, res) => {
                 } else {
                     console.error('No player found at seat:', nextRequest.seat);
                 }
+                
+                // CRITICAL: Broadcast updated game state after every action
+                // This ensures all players see pot changes, bets, community cards, etc.
+                const [playersForBroadcast] = await db.execute(`
+                    SELECT player_id, username, seat_number, chip_balance, current_bet
+                    FROM players 
+                    WHERE game_id = ?
+                    ORDER BY seat_number
+                `, [game_id]);
+                
+                const gameStateForBroadcast = {
+                    game_id: game_id,
+                    table_id: gameState.table_id,
+                    pot: gameState.pot,
+                    current_bet: gameState.current_bet,
+                    stage: gameState.stage,
+                    dealerSeat: gameState.dealer_seat,
+                    activePlayerId: nextPlayerRows.length > 0 ? nextPlayerRows[0].player_id : null,
+                    community_cards: gameState.community_cards,
+                    players: playersForBroadcast.map(p => {
+                        const bet = gameState.bets.find(b => b.seat === p.seat_number) || {};
+                        return {
+                            player_id: p.player_id,
+                            username: p.username,
+                            seat_number: p.seat_number,
+                            chip_balance: p.chip_balance,
+                            current_bet: bet.bet_amount || 0,
+                            is_folded: bet.folded || false,
+                            is_all_in: bet.allin || false,
+                            hole_cards: null // Don't expose hole cards in broadcast
+                        };
+                    })
+                };
+                
+                // Broadcast updated game state to all players at table
+                gameSocketManager.sendGameState(gameState.table_id, gameStateForBroadcast);
             }
             if (proceedResult === -1) {
                 const seatsInGame = gameState.bets.filter(b => !b.folded).map(b => b.seat);
+                console.log('Seats in game for showdown:', seatsInGame);
+                
                 // fetch hole cards from remaining players in game for showdown
                 const [playerRows] = await db.execute(`
                         SELECT player_id, hole_cards 
                         FROM players 
                         WHERE game_id = ? AND seat_number IN (${seatsInGame.join(',')})
                     `, [game_id]);
-                const playerCards = playerRows.map(row => ({
+                
+                console.log('Raw player rows from database:', playerRows.map(row => ({
                     player_id: row.player_id,
-                    hole_cards: JSON.parse(row.hole_cards)
-                }));
+                    hole_cards_raw: row.hole_cards,
+                    hole_cards_type: typeof row.hole_cards
+                })));
+                
+                const playerCards = playerRows.map(row => {
+                    let holeCards;
+                    console.log(`Processing hole cards for player ${row.player_id}:`, row.hole_cards);
+                    try {
+                        // Handle different hole_cards formats that might be in the database
+                        if (typeof row.hole_cards === 'string') {
+                            console.log(`Hole cards is string: "${row.hole_cards}"`);
+                            // Try to parse as JSON first
+                            if (row.hole_cards.startsWith('[') && row.hole_cards.endsWith(']')) {
+                                console.log('Parsing as JSON array');
+                                holeCards = JSON.parse(row.hole_cards);
+                            } else if (row.hole_cards.includes(',')) {
+                                // Handle comma-separated format like "Tc,2d"
+                                console.log('Parsing as comma-separated string');
+                                holeCards = row.hole_cards.split(',').map(card => card.trim());
+                            } else {
+                                // Single card or other format
+                                console.log('Treating as single card');
+                                holeCards = [row.hole_cards];
+                            }
+                        } else if (Array.isArray(row.hole_cards)) {
+                            console.log('Hole cards is already an array');
+                            holeCards = row.hole_cards;
+                        } else {
+                            console.error('Unexpected hole_cards format:', row.hole_cards);
+                            holeCards = [];
+                        }
+                        console.log(`Final parsed hole cards for player ${row.player_id}:`, holeCards);
+                    } catch (parseError) {
+                        console.error('Error parsing hole_cards for player', row.player_id, ':', parseError);
+                        console.error('Raw hole_cards data:', row.hole_cards);
+                        holeCards = [];
+                    }
+                    
+                    return {
+                        player_id: row.player_id,
+                        hole_cards: holeCards
+                    };
+                });
                 const winners = determineWinner(playerCards, gameState.community_cards);
+                
+                // Send individual game end for each winner (schema expects single winner)
+                // If multiple winners, send the first one for the main event
+                const primaryWinner = winners[0];
                 gameSocketManager.sendGameEnd(gameState.table_id, {
                     game_id: game_id,
-                    winners: winners,
+                    winner_seat: primaryWinner.seat || primaryWinner.player_id, // Use seat if available
+                    winning_hand: primaryWinner.winning_hand || primaryWinner.hand || 'High Card',
                     pot: gameState.pot
                 });
 
@@ -725,6 +853,21 @@ router.post('/action', authenticateToken, async (req, res) => {
                     message: 'Game ended - ready to start new round'
                 });
             }
+            
+            } catch (gameProgressionError) {
+                // Log game progression errors but don't send HTTP response (already sent)
+                console.error('Error in game progression after successful action:', gameProgressionError);
+                
+                // Still send error to players via socket for UI feedback
+                const playerId = req.user?.playerId;
+                if (playerId) {
+                    const playerSocket = tableSocketManager.getSocket(playerId);
+                    if (playerSocket) {
+                        gameSocketManager.sendError(playerSocket, 'Game progression error', req.body.game_id, playerId);
+                    }
+                }
+            }
+            
         } catch (dbError) {
             await db.query('ROLLBACK');
             throw dbError;
@@ -733,16 +876,22 @@ router.post('/action', authenticateToken, async (req, res) => {
     } catch (error) {
         console.error('Error processing player action:', error);
 
-        // Send error to player via socket
-        const playerId = req.user?.playerId;
-        if (playerId) {
-            const playerSocket = tableSocketManager.getSocket(playerId);
-            if (playerSocket) {
-                gameSocketManager.sendError(playerSocket, 'Failed to process action', req.body.game_id, playerId);
+        // Only send HTTP error response if we haven't sent a success response yet
+        // (This prevents "Cannot set headers after they are sent" errors)
+        if (!res.headersSent) {
+            // Send error to player via socket
+            const playerId = req.user?.playerId;
+            if (playerId) {
+                const playerSocket = tableSocketManager.getSocket(playerId);
+                if (playerSocket) {
+                    gameSocketManager.sendError(playerSocket, 'Failed to process action', req.body.game_id, playerId);
+                }
             }
-        }
 
-        res.status(500).json({ message: 'Failed to process player action' });
+            res.status(500).json({ message: 'Failed to process player action' });
+        } else {
+            console.log('HTTP response already sent, not sending error response');
+        }
     }
 });
 

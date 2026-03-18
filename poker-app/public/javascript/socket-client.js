@@ -113,7 +113,7 @@ window.lateRegisterSocket = lateRegisterSocket;
 function joinTable(tableId) {
     socket.emit('join_table', tableId);
     currentTableId = tableId;
-    console.log(`Joining table: ${tableId}`);
+    console.log(`Joining table: ${tableId} - socket connected: ${socket.connected}`);
 }
 
 function leaveTable() {
@@ -218,12 +218,20 @@ socket.on('server_request_call', (packet) => {
 
 // Full game state update - call new updateGameState method
 socket.on('gamestate', (packet) => {
-    console.log('Game state update:', packet);
+    console.log('Game state update received:', {
+        game_id: packet.game_id,
+        stage: packet.stage,
+        pot: packet.pot,
+        community_cards: packet.community_cards,
+        players_count: packet.players?.length || 0
+    });
     gameState = packet;
     currentGameId = packet.game_id;
     
     if (window.pokerGameInstance) {
         window.pokerGameInstance.updateGameState(packet);
+    } else {
+        console.warn('pokerGameInstance not available to handle game state update');
     }
 });
 
@@ -267,10 +275,18 @@ socket.on('server_update_last_action', (packet) => {
 
 // Stage progression (flop, turn, river)
 socket.on('server_update_stage_progression', (packet) => {
-    console.log('Stage progression:', packet);
+    console.log('Stage progression received:', {
+        game_id: packet.game_id,
+        stage: packet.stage,
+        community_cards: packet.community_cards ? packet.community_cards.length : 0
+    });
     if (window.pokerGameInstance) {
-        // Thin client: Server manages all logic, request fresh game state
+        // Note: With updated server, full game state should be sent after stage progression
+        // But keep the fallback request just in case
+        console.log('Stage progression - requesting game state as fallback');
         requestGameState();
+    } else {
+        console.warn('pokerGameInstance not available to handle stage progression');
     }
 });
 

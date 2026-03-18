@@ -117,7 +117,7 @@ class PokerCards {
                 numCards = 1;
                 break;
             default:
-                throw new Error('Invalid stage for community cards');
+                throw new Error(`Invalid stage for community cards: ${stage}`);
         }
 
         // Burn one card, then deal
