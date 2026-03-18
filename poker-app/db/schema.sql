@@ -28,6 +28,8 @@ CREATE TABLE tables (
 CREATE TABLE gamestate (
   game_id         INT     NOT NULL AUTO_INCREMENT,
   table_id        INT     NOT NULL,
+  big_blind       INT     NOT NULL DEFAULT 20,
+  max_players     TINYINT NOT NULL DEFAULT 9,
   dealer_seat     TINYINT NOT NULL DEFAULT 0,
   hot_seat        TINYINT NULL,
   stage           TINYINT NOT NULL DEFAULT 0,

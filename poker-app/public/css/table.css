@@ -192,10 +192,122 @@ body {
     color: var(--accent-info);
 }
 
+/* Game Ended - Start New Game Section */
+.game-ended-section {
+    text-align: center;
+    padding: 1.5rem;
+    margin: 1rem 0;
+    border-radius: var(--radius-md);
+    background: linear-gradient(135deg, rgba(62, 207, 142, 0.15) 0%, rgba(74, 158, 255, 0.15) 100%);
+    border: 1px solid var(--accent-success);
+}
+
+.game-ended-section .game-ended-icon {
+    font-size: 2.5rem;
+    margin-bottom: 0.5rem;
+}
+
+.game-ended-section h3 {
+    margin: 0 0 0.5rem 0;
+    color: var(--text-primary);
+    font-size: 1.25rem;
+}
+
+.game-ended-section p {
+    margin: 0 0 1rem 0;
+    color: var(--text-secondary);
+    font-size: 0.9rem;
+}
+
+.btn-large {
+    padding: 1rem 2rem !important;
+    font-size: 1.1rem !important;
+}
+
 .loading {
     text-align: center;
     color: var(--text-secondary);
     padding: 2rem;
+}
+
+/* Connection status indicator */
+.connection-status {
+    font-size: 0.75rem;
+    margin-right: 0.5rem;
+}
+
+.connection-status.connected {
+    color: var(--accent-success);
+}
+
+.connection-status.disconnected {
+    color: #e05252;
+}
+
+/* Sitting out state */
+.seat.sitting-out {
+    opacity: 0.6;
+    border-style: dashed;
+}
+
+.seat-status {
+    font-size: 0.75rem;
+    color: #e09952;
+    margin-top: 0.25rem;
+    font-style: italic;
+}
+
+/* Messages section */
+.messages-section {
+    background: var(--bg-surface);
+    border: 0.5px solid var(--border);
+    border-radius: var(--radius-md);
+    padding: 1rem 1.25rem;
+    max-height: 200px;
+    overflow-y: auto;
+}
+
+.messages-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+.message {
+    font-size: 0.85rem;
+    padding: 0.5rem 0.75rem;
+    border-radius: 6px;
+    background: var(--bg-raised);
+}
+
+.message-info {
+    border-left: 3px solid var(--accent-info);
+}
+
+.message-success {
+    border-left: 3px solid var(--accent-success);
+}
+
+.message-error {
+    border-left: 3px solid #e05252;
+    background: rgba(224, 82, 82, 0.1);
+}
+
+.message-table {
+    border-left: 3px solid #9b59b6;
+}
+
+.message-text {
+    color: var(--text-secondary);
+}
+
+.error {
+    background: rgba(224, 82, 82, 0.1);
+    border: 0.5px solid rgba(224, 82, 82, 0.3);
+    color: #e05252;
+    padding: 1rem;
+    border-radius: var(--radius-md);
+    text-align: center;
 }
 
 .error {

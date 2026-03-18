@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Table Lobby - Poker App</title>
+    <script src="/socket.io/socket.io.js"></script>
+    <script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <link rel="stylesheet" href="../css/styles.css">
+    <link rel="stylesheet" href="../css/table.css">
+</head>
+<body x-data="tableLobby()" x-init="init()">
+    <div class="table-lobby">
+        <!-- Header -->
+        <div class="header">
+            <a href="home.html" class="back-btn">← Back to Home</a>
+            <div class="user-info" x-show="user">
+                <span class="connection-status" :class="socketConnected ? 'connected' : 'disconnected'">●</span>
+                <strong x-text="user?.username || 'Player'"></strong> • 
+                <span x-text="(user?.chip_balance || 0).toLocaleString()"></span> chips
+            </div>
+        </div>
+
+        <!-- Loading State -->
+        <div x-show="loading" class="loading">
+            Loading table...
+        </div>
+
+        <!-- Error State -->
+        <div x-show="error && !loading" class="error" x-text="error"></div>
+
+        <!-- Table Content -->
+        <div x-show="!loading && !error && table">
+            <!-- Table Info -->
+            <div class="table-card">
+                <div class="table-info">
+                    <h2 x-text="table?.name || 'Poker Table'"></h2>
+                    <div class="table-meta">
+                        <span>Blinds: <strong x-text="table?.small_blind || 10"></strong>/<strong x-text="table?.big_blind || 20"></strong></span>
+                        <span>Players: <strong x-text="(table?.current_players || 0) + '/' + (table?.max_players || 9)"></strong></span>
+                    </div>
+                </div>
+
+                <!-- Seats -->
+                <div class="seats-grid">
+                    <template x-for="seat in seats" :key="seat.number">
+                        <div class="seat" 
+                             :class="{ 
+                                 'occupied': seat.player, 
+                                 'you': seat.player?.player_id === myPlayerId,
+                                 'sitting-out': seat.player?.status === 'sitting_out'
+                             }">
+                            <div class="seat-number" x-text="seat.number"></div>
+                            <template x-if="seat.player">
+                                <div>
+                                    <div class="seat-player" x-text="seat.player.username"></div>
+                                    <div class="seat-chips" x-text="(seat.player.chip_balance || 0).toLocaleString() + ' chips'"></div>
+                                    <div class="seat-status" x-show="seat.player.status === 'sitting_out'">Sitting Out</div>
+                                </div>
+                            </template>
+                            <template x-if="!seat.player">
+                                <div class="seat-empty">Empty</div>
+                            </template>
+                        </div>
+                    </template>
+                </div>
+            </div>
+
+            <!-- Game Ended - Start New Game Prompt -->
+            <div x-show="gameEnded && isSeated && !activeGame" class="game-ended-section">
+                <div class="game-ended-icon">🏆</div>
+                <h3>Previous Game Ended</h3>
+                <p>Ready to play another hand?</p>
+                <button class="btn btn-primary btn-large" 
+                        @click="startGame" 
+                        :disabled="actionInProgress || (table?.current_players < 2)">
+                    <span x-show="!actionInProgress">Start New Game</span>
+                    <span x-show="actionInProgress">Starting...</span>
+                </button>
+                <button class="btn btn-secondary" 
+                        @click="gameEnded = false" 
+                        style="margin-top: 0.5rem;">
+                    Dismiss
+                </button>
+            </div>
+
+            <!-- Active Game Status -->
+            <div x-show="activeGame" class="game-status">
+                <div>🎮 Game in Progress</div>
+                <button class="btn btn-primary" 
+                        style="margin-top: 0.75rem; flex: none; padding: 0.5rem 1.5rem;"
+                        @click="joinActiveGame">Join Game</button>
+            </div>
+
+            <!-- Actions -->
+            <div class="action-section" x-show="!activeGame">
+                <h3 style="margin: 0 0 1rem 0; font-size: 1.1rem;">Table Actions</h3>
+                
+                <!-- Join Table (if not seated) -->
+                <template x-if="!isSeated">
+                    <div>
+                        <p style="color: var(--text-secondary); margin-bottom: 1rem; font-size: 0.875rem;">
+                            You need to join the table before you can play.
+                        </p>
+                        <div class="action-buttons">
+                            <button class="btn btn-primary" 
+                                    @click="joinTable" 
+                                    :disabled="actionInProgress || (table?.current_players >= table?.max_players)">
+                                <span x-show="!actionInProgress">Join Table</span>
+                                <span x-show="actionInProgress">Joining...</span>
+                            </button>
+                        </div>
+                    </div>
+                </template>
+
+                <!-- Seated Player Actions -->
+                <template x-if="isSeated">
+                    <div>
+                        <p style="color: var(--text-secondary); margin-bottom: 1rem; font-size: 0.875rem;">
+                            <span x-text="table?.current_players"></span> players seated. 
+                            <span x-show="table?.current_players >= 2">Ready to start a game!</span>
+                            <span x-show="table?.current_players < 2">Waiting for more players...</span>
+                        </p>
+                        <div class="action-buttons">
+                            <button class="btn btn-primary" 
+                                    @click="startGame" 
+                                    :disabled="actionInProgress || (table?.current_players < 2)"
+                                    x-show="table?.current_players >= 2">
+                                <span x-show="!actionInProgress">Start Game</span>
+                                <span x-show="actionInProgress">Starting...</span>
+                            </button>
+                            <!-- Sit Out / Sit In toggle -->
+                            <button class="btn btn-secondary" 
+                                    @click="sitOut" 
+                                    :disabled="actionInProgress"
+                                    x-show="myPlayer?.status === 'active'">
+                                Sit Out
+                            </button>
+                            <button class="btn btn-secondary" 
+                                    @click="sitIn" 
+                                    :disabled="actionInProgress"
+                                    x-show="myPlayer?.status === 'sitting_out'">
+                                Sit Back In
+                            </button>
+                            <button class="btn btn-danger" 
+                                    @click="leaveTable" 
+                                    :disabled="actionInProgress">
+                                <span x-show="!actionInProgress">Leave Table</span>
+                                <span x-show="actionInProgress">Leaving...</span>
+                            </button>
+                        </div>
+                    </div>
+                </template>
+            </div>
+
+            <!-- Messages Section -->
+            <div class="messages-section" x-show="messages.length > 0">
+                <h4 style="margin: 0 0 0.5rem 0; font-size: 0.9rem; color: var(--text-secondary);">Activity</h4>
+                <div class="messages-list">
+                    <template x-for="(msg, index) in messages" :key="index">
+                        <div class="message" :class="'message-' + msg.type">
+                            <span class="message-text" x-text="msg.text"></span>
+                        </div>
+                    </template>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="../javascript/auth.js"></script>
+    <script src="../javascript/socket-client.js"></script>
+    <script src="../javascript/table.js"></script>
+</body>
+</html>

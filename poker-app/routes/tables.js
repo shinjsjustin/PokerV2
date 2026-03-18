@@ -337,6 +337,13 @@ router.post('/:tableId/join', authenticateToken, async (req, res) => {
             // Socket integration: Join table room and notify other players
             tableSocketManager.joinTable(playerId, tableId);
             
+            // Emit table_player_joined event so other clients refresh their data
+            tableSocketManager.emitToTable(tableId, 'table_player_joined', {
+                player_id: playerId,
+                username: playerName,
+                seat_number: nextSeat
+            });
+            
             // Notify table of new player (excluding the joining player)
             tableSocketManager.sendToTable(tableId, `${playerName} has joined the table at seat ${nextSeat}`);
             
@@ -465,6 +472,13 @@ async function leaveTableHelper(tableId, playerId) {
         // Socket notifications: Leave table room and notify remaining players
         tableSocketManager.leaveTable(playerId, tableId);
         
+        // Emit table_player_left event so other clients refresh their data
+        tableSocketManager.emitToTable(tableId, 'table_player_left', {
+            player_id: playerId,
+            username: playerName,
+            seat_number: seatNumber
+        });
+        
         // Notify remaining players at table 
         if (remainingPlayers[0].count > 0) {
             tableSocketManager.sendToTable(tableId, `${playerName} has left seat ${seatNumber}`);
@@ -498,58 +512,6 @@ router.get('/:tableId/players', async (req, res) => {
     } catch (error) {
         console.error('Error fetching table players:', error);
         res.status(500).json({ message: 'Failed to fetch table players' });
-    }
-});
-
-// POST /tables/:tableId/sit-out - Sit out from table with notifications
-router.post('/:tableId/sit-out', authenticateToken, async (req, res) => {
-    try {
-        const { tableId } = req.params;
-        const playerId = req.user.playerId;
-        const playerName = req.user.username || `Player ${playerId}`;
-
-        const [result] = await db.execute(
-            'UPDATE players SET status = "sitting_out" WHERE table_id = ? AND player_id = ? AND status = "active"',
-            [tableId, playerId]
-        );
-        
-        if (result.affectedRows === 0) {
-            return res.status(404).json({ message: 'Player not actively seated at table' });
-        }
-        
-        // Notify table of player sitting out
-        tableSocketManager.sendToTable(tableId, `${playerName} is now sitting out`);
-        
-        res.json({ message: 'Successfully sitting out' });
-    } catch (error) {
-        console.error('Error sitting out:', error);
-        res.status(500).json({ message: 'Failed to sit out' });
-    }
-});
-
-// POST /tables/:tableId/sit-in - Sit back in at table with notifications
-router.post('/:tableId/sit-in', authenticateToken, async (req, res) => {
-    try {
-        const { tableId } = req.params;
-        const playerId = req.user.playerId;
-        const playerName = req.user.username || `Player ${playerId}`;
-        
-        const [result] = await db.execute(
-            'UPDATE players SET status = "active" WHERE table_id = ? AND player_id = ? AND status = "sitting_out"', 
-            [tableId, playerId]
-        );
-        
-        if (result.affectedRows === 0) {
-            return res.status(404).json({ message: 'Player not sitting out at table' });
-        }
-        
-        // Notify table of player sitting back in
-        tableSocketManager.sendToTable(tableId, `${playerName} is back in the game!`);
-        
-        res.json({ message: 'Successfully sitting back in' });
-    } catch (error) {
-        console.error('Error sitting back in:', error);
-        res.status(500).json({ message: 'Failed to sit back in' });
     }
 });
 

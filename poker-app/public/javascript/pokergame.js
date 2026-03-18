@@ -29,15 +29,22 @@ function pokerGame() {
     activePlayerName: '',
     messages: [],
     lastActions: [],
+    myHoleCards: null, // Player's private hole cards from server
 
     // ── Simple Getters (no computation) ───────────────
     get myPlayer() {
       if (!this.game?.players || !this.myPlayerId) return null;
-      return this.game.players.find(p => p.player_id === this.myPlayerId) || null;
+      const myId = Number(this.myPlayerId);
+      return this.game.players.find(p => Number(p.player_id) === myId) || null;
     },
 
     get actionDisabled() {
       return this.actionInProgress || !this.isMyTurn;
+    },
+
+    get myHandLabel() {
+      // Simple hand description - could be enhanced with pokersolver integration
+      return null;
     },
     
     get communityDisplay() {
@@ -89,24 +96,96 @@ function pokerGame() {
     },
 
     // ── Server Communication ──────────────────────────
-    // Send action to server via socket (server handles all logic)
-    act(type) {
-      if (this.actionDisabled || !this.gameId || !window.socket) return;
+    // Send action to server via HTTP POST (server handles all logic)
+    async act(type) {
+      if (this.actionDisabled || !this.gameId) return;
+
+      const myPlayer = this.myPlayer;
+      if (!myPlayer) {
+        console.error('Cannot act: player info not found');
+        return;
+      }
 
       this.actionInProgress = true;
       
-      const action = {
-        type: type,
-        amount: type === 'raise' ? this.raiseAmount : this.toCall,
+      // Convert frontend action type to PlayerAction format
+      // PlayerAction expects: game_id, seat, current_bet, player_bet, allin
+      // player_bet: -1 = fold, 0 = check (when current_bet is 0), 
+      //             = current_bet for call, > current_bet for raise
+      let player_bet;
+      let allin = false;
+      const currentBet = this.game.current_bet || 0;
+      const myCurrentBet = myPlayer.current_bet || 0;
+      const toCall = Math.max(0, currentBet - myCurrentBet);
+      
+      switch (type) {
+        case 'fold':
+          player_bet = -1;
+          break;
+        case 'check':
+          player_bet = 0;
+          break;
+        case 'call':
+          // For call, player_bet should equal the current_bet (the amount to match)
+          player_bet = currentBet;
+          break;
+        case 'raise':
+          // raiseAmount is the total bet amount the player wants to have in
+          player_bet = this.raiseAmount;
+          break;
+        case 'allin':
+          // All-in: player_bet is their total chip stack + what they already have in
+          player_bet = myPlayer.chip_balance + myCurrentBet;
+          allin = true;
+          break;
+        default:
+          console.error('Unknown action type:', type);
+          this.actionInProgress = false;
+          return;
+      }
+
+      const actionPayload = {
         game_id: this.gameId,
-        player_id: this.myPlayerId
+        seat: myPlayer.seat_number,
+        current_bet: currentBet,
+        player_bet: player_bet,
+        allin: allin
       };
 
-      console.log('Sending action to server:', action);
-      window.socket.emit('player_action', action);
-      
-      // Hide raise panel after action
-      this.showRaise = false;
+      console.log('Sending action to server:', actionPayload);
+
+      try {
+        const response = await authenticatedFetch('/api/games/action', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(actionPayload)
+        });
+
+        const result = await response.json();
+        
+        if (!response.ok) {
+          console.error('Action failed:', result.message);
+          this.addMessage({
+            type: 'error',
+            text: result.message || 'Action failed',
+            timestamp: new Date()
+          });
+        } else {
+          console.log('Action processed:', result);
+          // Clear action options after successful action
+          this.clearActionOptions();
+        }
+      } catch (error) {
+        console.error('Failed to send action:', error);
+        this.addMessage({
+          type: 'error',
+          text: 'Failed to send action',
+          timestamp: new Date()
+        });
+      } finally {
+        this.actionInProgress = false;
+        this.showRaise = false;
+      }
     },
 
     loadUserInfo() {
@@ -122,16 +201,38 @@ function pokerGame() {
     },
 
     reloadGame() {
-      // Simply request fresh data from server
-      if (window.socket && this.tableId) {
-        this.loading = true;
-        this.error = null;
-        window.socket.emit('request_game_state', { tableId: this.tableId });
+      // Fetch fresh game state from API
+      this.loading = true;
+      this.error = null;
+      this.fetchGameState();
+    },
+
+    // ── API Fetch ──────────────────────────────────────
+    async fetchGameState() {
+      if (!this.gameId) {
+        this.error = 'No game ID provided';
+        this.loading = false;
+        return;
+      }
+
+      try {
+        const response = await authenticatedFetch(`/api/games/${this.gameId}/state`);
+        if (!response.ok) {
+          const errorData = await response.json();
+          throw new Error(errorData.message || 'Failed to fetch game state');
+        }
+
+        const gameState = await response.json();
+        this.updateGameState(gameState);
+      } catch (error) {
+        console.error('Failed to fetch game state:', error);
+        this.error = error.message;
+        this.loading = false;
       }
     },
 
     // ── Init ───────────────────────────────────────────
-    init() {
+    async init() {
       try {
         // Check authentication
         if (!isAuthenticated()) {
@@ -151,11 +252,20 @@ function pokerGame() {
           throw new Error('No table ID provided');
         }
 
+        if (!this.gameId) {
+          throw new Error('No game ID provided');
+        }
+
         // Expose this component instance globally for socket integration
         window.pokerGameInstance = this;
         
-        // Server will send initial game state via socket after connection
-        this.loading = false;
+        // Late-register socket if it connected before we had player info
+        if (typeof lateRegisterSocket === 'function' && this.myPlayerId) {
+          lateRegisterSocket(this.myPlayerId, this.tableId);
+        }
+        
+        // Fetch initial game state from API
+        await this.fetchGameState();
 
       } catch (error) {
         console.error('Initialization error:', error);
@@ -184,6 +294,84 @@ function pokerGame() {
       
       // Reset action state when game state updates
       this.actionInProgress = false;
+      
+      // Handle pending action if this player needs to act (e.g., on page refresh)
+      // Use Number() to ensure consistent type comparison
+      const pendingPlayerId = serverData.pendingAction?.player_id;
+      const myId = Number(this.myPlayerId);
+      console.log('Checking pending action:', { pendingPlayerId, myId, hasPendingAction: !!serverData.pendingAction });
+      
+      if (serverData.pendingAction && Number(pendingPlayerId) === myId) {
+        const pending = serverData.pendingAction;
+        console.log('Restoring pending action on refresh:', pending);
+        
+        const isCheckRequest = pending.to_call === 0;
+        if (isCheckRequest) {
+          // Check scenario
+          this.updateActionOptions({
+            check: true,
+            raise: true,
+            allin: true,
+            minRaise: pending.min_raise
+          });
+        } else {
+          // Call scenario
+          this.updateActionOptions({
+            call: pending.to_call,
+            raise: true,
+            fold: true,
+            allin: true,
+            minRaise: pending.min_raise,
+            toCall: pending.to_call
+          });
+        }
+        
+        // Get my player's chip balance for maxRaise
+        const myPlayer = serverData.players?.find(p => Number(p.player_id) === myId);
+        const myChips = myPlayer?.chip_balance || 0;
+        
+        // Find active player name from seat
+        const activePlayer = serverData.players?.find(p => p.seat_number === pending.seat);
+        const activePlayerName = activePlayer?.username || 'Unknown';
+        
+        this.updatePlayerState({
+          isMyTurn: true,
+          canRaise: true,
+          toCall: pending.to_call,
+          minRaise: pending.min_raise,
+          maxRaise: myChips,
+          activePlayerSeat: pending.seat,
+          activePlayerName: activePlayerName
+        });
+      } else {
+        console.log('No pending action for this player. pendingAction:', serverData.pendingAction);
+      }
+    },
+
+    /**
+     * Receive hole cards dealt to this player (private)
+     * @param {Array} holeCards - Array of card strings e.g. ["Ah", "Kd"]
+     * @param {number} seatNumber - The seat number this player is at
+     */
+    receiveHoleCards(holeCards, seatNumber) {
+      console.log('Received hole cards:', holeCards, 'at seat:', seatNumber);
+      
+      // Update the player's hole cards in the game state
+      if (this.game && this.game.players) {
+        const myPlayer = this.game.players.find(p => p.player_id === this.myPlayerId);
+        if (myPlayer) {
+          myPlayer.hole_cards = holeCards;
+        }
+      }
+      
+      // Also store locally for quick access
+      this.myHoleCards = holeCards;
+      
+      this.addMessage({
+        type: 'info',
+        text: 'Cards dealt!',
+        timestamp: new Date()
+      });
     },
 
     updatePlayerState(playerData) {
@@ -206,10 +394,15 @@ function pokerGame() {
     updateActionOptions(options) {
       console.log('Received action options from server:', options);
       this.actionOptions = options;
-      this.isMyTurn = options && options.length > 0;
+      // Options is an object, not an array - check if it has any truthy action properties
+      this.isMyTurn = !!(options && (options.check || options.call || options.fold || options.raise || options.allin));
       
       if (this.isMyTurn && options.minRaise) {
         this.raiseAmount = options.minRaise;
+        this.minRaise = options.minRaise;
+      }
+      if (options.toCall !== undefined) {
+        this.toCall = options.toCall;
       }
     },
 

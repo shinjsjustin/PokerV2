@@ -29,8 +29,10 @@ class TableSocketManager {
      * Register a player's socket connection
      */
     registerPlayer(socket, playerId) {
-        this.playerSockets.set(playerId, socket.id);
-        this.socketPlayers.set(socket.id, playerId);
+        // Ensure playerId is stored as a number for consistent lookups
+        const pid = Number(playerId);
+        this.playerSockets.set(pid, socket.id);
+        this.socketPlayers.set(socket.id, pid);
         
         socket.on('disconnect', () => this.handleDisconnect(socket));
     }
@@ -55,7 +57,8 @@ class TableSocketManager {
      * Get socket by player ID
      */
     getSocket(playerId) {
-        const socketId = this.playerSockets.get(playerId);
+        const pid = Number(playerId);
+        const socketId = this.playerSockets.get(pid);
         return socketId ? this.io.sockets.sockets.get(socketId) : null;
     }
 
@@ -67,26 +70,27 @@ class TableSocketManager {
      * Add player to a table room
      */
     joinTable(playerId, tableId) {
-        const socket = this.getSocket(playerId);
+        const pid = Number(playerId);
+        const socket = this.getSocket(pid);
         if (!socket) return false;
 
         // Leave current table if in one
-        const currentTable = this.playerTables.get(playerId);
+        const currentTable = this.playerTables.get(pid);
         if (currentTable) {
-            this.leaveTable(playerId, currentTable);
+            this.leaveTable(pid, currentTable);
         }
 
         // Join new table
         socket.join(`table:${tableId}`);
-        this.playerTables.set(playerId, tableId);
+        this.playerTables.set(pid, tableId);
 
         if (!this.tables.has(tableId)) {
             this.tables.set(tableId, new Set());
         }
-        this.tables.get(tableId).add(playerId);
+        this.tables.get(tableId).add(pid);
 
         // Notify table of new player
-        this.sendToTable(tableId, `Player ${playerId} has joined the table`);
+        this.sendToTable(tableId, `Player ${pid} has joined the table`);
         
         return true;
     }
@@ -95,22 +99,23 @@ class TableSocketManager {
      * Remove player from a table room
      */
     leaveTable(playerId, tableId) {
-        const socket = this.getSocket(playerId);
+        const pid = Number(playerId);
+        const socket = this.getSocket(pid);
         if (!socket) return false;
 
         socket.leave(`table:${tableId}`);
-        this.playerTables.delete(playerId);
+        this.playerTables.delete(pid);
 
         const tableMembers = this.tables.get(tableId);
         if (tableMembers) {
-            tableMembers.delete(playerId);
+            tableMembers.delete(pid);
             if (tableMembers.size === 0) {
                 this.tables.delete(tableId);
             }
         }
 
         // Notify table of player leaving
-        this.sendToTable(tableId, `Player ${playerId} has left the table`);
+        this.sendToTable(tableId, `Player ${pid} has left the table`);
 
         return true;
     }

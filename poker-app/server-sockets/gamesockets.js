@@ -5,6 +5,7 @@ const {
     ServerUpdateLastAction,
     ServerUpdateStageProgression,
     ServerUpdateGameEnd,
+    ServerGameEndedReturnToTable,
     GameState,
     GameStateBet,
     ErrorMessage,
@@ -88,6 +89,14 @@ class GameSocketManager {
         this.io.to(`table:${tableId}`).emit(PackageType.SERVER_UPDATE_GAME_END, packet);
     }
 
+    /**
+     * Notify players game ended and redirect to table page for new game
+     */
+    sendGameEndedReturnToTable(tableId, { winners, pot, message }) {
+        const packet = new ServerGameEndedReturnToTable({ table_id: tableId, winners, pot, message });
+        this.io.to(`table:${tableId}`).emit(PackageType.SERVER_GAME_ENDED_RETURN_TO_TABLE, packet);
+    }
+
     // ═══════════════════════════════════════════════════════════════════
     // Bet Updates
     // ═══════════════════════════════════════════════════════════════════
@@ -98,6 +107,46 @@ class GameSocketManager {
     sendBetUpdate(tableId, { seat, bet_amount, allin, folded }) {
         const packet = new GameStateBet({ seat, bet_amount, allin, folded });
         this.io.to(`table:${tableId}`).emit(PackageType.GAMESTATE_BET, packet);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // Card Dealing
+    // ═══════════════════════════════════════════════════════════════════
+
+    /**
+     * Deal hole cards to a specific player (private - only they see their cards)
+     * @param {Socket} socket - Player's socket
+     * @param {Object} data - { game_id, player_id, hole_cards, seat_number }
+     */
+    dealHoleCardsToPlayer(socket, { game_id, player_id, hole_cards, seat_number }) {
+        socket.emit(PackageType.DEAL_HOLE_CARDS, {
+            type: PackageType.DEAL_HOLE_CARDS,
+            game_id,
+            player_id,
+            hole_cards,
+            seat_number,
+            timestamp: new Date()
+        });
+    }
+
+    /**
+     * Deal hole cards to all players at a table (each player gets only their cards)
+     * @param {Object} tableSocketManager - Reference to table socket manager for getting player sockets
+     * @param {number} game_id - Game ID
+     * @param {Array} players - Array of { player_id, seat_number, hole_cards }
+     */
+    dealHoleCardsToAllPlayers(tableSocketManager, game_id, players) {
+        for (const player of players) {
+            const socket = tableSocketManager.getSocket(player.player_id);
+            if (socket) {
+                this.dealHoleCardsToPlayer(socket, {
+                    game_id,
+                    player_id: player.player_id,
+                    hole_cards: player.hole_cards,
+                    seat_number: player.seat_number
+                });
+            }
+        }
     }
 
     // ═══════════════════════════════════════════════════════════════════

@@ -3,6 +3,8 @@ const {
     GameState,
     GameStateBet,
     ServerUpdateLastAction,
+    ServerRequestCall,
+    ServerRequestCheck,
 } = require('../datapacks/schema.js');
 
 const pokerCards = require('./hands.js');
@@ -32,12 +34,39 @@ const pokerCards = require('./hands.js');
 // ═══════════════════════════════════════════════════════════════════
 // Helpers
 // ═══════════════════════════════════════════════════════════════════
+
+/**
+ * Find a bet object by seat number
+ * @param {Array} bets - Array of GameStateBet objects
+ * @param {number} seat - Seat number to find
+ * @returns {GameStateBet|undefined} - The bet object for that seat, or undefined
+ */
+function getBetBySeat(bets, seat) {
+    const seatNum = Number(seat);
+    return bets.find(b => Number(b.seat) === seatNum);
+}
+
+/**
+ * Update or add a bet for a specific seat
+ * @param {Array} bets - Array of GameStateBet objects
+ * @param {GameStateBet} newBet - The new bet object to set
+ */
+function setBetBySeat(bets, newBet) {
+    const seatNum = Number(newBet.seat);
+    const index = bets.findIndex(b => Number(b.seat) === seatNum);
+    if (index !== -1) {
+        bets[index] = newBet;
+    } else {
+        bets.push(newBet);
+    }
+}
+
 /**
  * @param {GameState} gameState - Current state of the game
  * @returns {{communityCards: string[], deck: string[]}} - Updated community cards and deck after dealing
  */
 function updateCommunityCards(gameState) {
-    const {communityCards, deck} = pokerCards.dealCommunityCards(gameState.deck, gameState.communityCards, gameState.stage)
+    const {communityCards, deck} = pokerCards.dealCommunityCards(gameState.deck, gameState.community_cards, gameState.stage)
     gameState.community_cards = communityCards;
     gameState.deck = deck;
     return {communityCards, deck};
@@ -49,30 +78,52 @@ function updateCommunityCards(gameState) {
  * @returns {number} - Whether the game should continue (1 = continue, 0 = stage progression, -1 = game over)
  */
 function proceed(gameState) {
+    // Get all seats that are still active (not folded, not all-in)
+    const activeBets = gameState.bets.filter(b => !b.folded && !b.allin);
+    const activeSeats = activeBets.map(b => b.seat).sort((a, b) => a - b);
+    
     if (gameState.aggrounds > 0) {
+        // Find the current hot seat position in active seats
+        const currentIdx = activeSeats.indexOf(gameState.hot_seat);
+        if (currentIdx === -1) {
+            // Hot seat player folded/all-in, find next active
+            const nextSeat = activeSeats.find(s => s > gameState.hot_seat) || activeSeats[0];
+            gameState.hot_seat = nextSeat;
+            return 1;
+        }
+        
         // Find next active seat that still needs to act
-        let nextSeat = (gameState.hot_seat + 1) % gameState.max_players;
-        while (
-            gameState.bets[nextSeat].folded ||
-            gameState.bets[nextSeat].allin ||
-            gameState.bets[nextSeat].bet_amount === gameState.current_bet
-        ) {
-            nextSeat = (nextSeat + 1) % gameState.max_players;
-            if (nextSeat === (gameState.hot_seat + 1) % gameState.max_players) {
-                // Wrapped all the way around — no one left to act
-                throw new Error('No active players left to act, but aggrounds > 0');
+        let searchIdx = (currentIdx + 1) % activeSeats.length;
+        let startIdx = searchIdx;
+        
+        while (true) {
+            const seat = activeSeats[searchIdx];
+            const bet = getBetBySeat(gameState.bets, seat);
+            
+            if (bet.bet_amount !== gameState.current_bet) {
+                // This player needs to act
+                gameState.hot_seat = seat;
+                return 1;
+            }
+            
+            searchIdx = (searchIdx + 1) % activeSeats.length;
+            if (searchIdx === startIdx) {
+                // Wrapped all the way around — everyone has matched the bet
+                // This shouldn't happen if aggrounds > 0, but handle gracefully
+                break;
             }
         }
-        gameState.hot_seat = nextSeat;
-        return 1;
-    } else if (gameState.stage < 4) {
+        
+        // No one left to act, proceed to next stage
+        gameState.aggrounds = 0;
+    }
+    
+    if (gameState.stage < 4) {
         gameState.stage += 1;
-        // Scan forward from dealer to find first active player
-        let seat = (gameState.dealer_seat + 1) % gameState.max_players;
-        while (gameState.bets[seat].folded || gameState.bets[seat].allin) {
-            seat = (seat + 1) % gameState.max_players;
-        }
-        gameState.hot_seat = seat;
+        // First active player after dealer acts first
+        const dealerSeat = gameState.dealer_seat;
+        const nextSeat = activeSeats.find(s => s > dealerSeat) || activeSeats[0];
+        gameState.hot_seat = nextSeat;
         return 0;
     } else {
         return -1;
@@ -92,23 +143,45 @@ function updateGameStateWithNewBet(gameState, newAction) {
     if(gameState.hot_seat !== newAction.seat){
         throw new Error('Action taken by player out of turn');
     }
-    const bet = new GameStateBet({
-        seat: newAction.seat,
-        bet_amount: newAction.player_bet,
-        allin: newAction.allin,
-        folded: newAction.player_bet === -1
-    });
-    gameState.bets[newAction.seat] = bet;
+    
+    // Get the player's PREVIOUS bet BEFORE updating
+    const previousBetObj = getBetBySeat(gameState.bets, newAction.seat);
+    const previousBetAmount = previousBetObj?.bet_amount || 0;
     
     // If player folded or went all-in, reduce max_players
-    if (newAction.allin || newAction.folded){
+    if (newAction.allin || newAction.player_bet === -1){
         gameState.max_players -= 1;
     }
 
     // NO FOLD UPDATE POT & CURRENT BET
     if (newAction.player_bet !== -1){
-        gameState.pot += newAction.player_bet;
-        gameState.current_bet = newAction.player_bet;
+        // Calculate additional chips going to pot
+        const additionalToPot = newAction.player_bet - previousBetAmount;
+        
+        if (additionalToPot > 0) {
+            gameState.pot += additionalToPot;
+        }
+        
+        // Update current_bet only if player is raising above it
+        if (newAction.player_bet > gameState.current_bet) {
+            gameState.current_bet = newAction.player_bet;
+        }
+        
+        // Update the player's bet in the bets array
+        setBetBySeat(gameState.bets, new GameStateBet({
+            seat: newAction.seat,
+            bet_amount: newAction.player_bet,
+            folded: false,
+            allin: newAction.allin || false
+        }));
+    } else {
+        // Fold - mark player as folded (keep their previous bet amount)
+        setBetBySeat(gameState.bets, new GameStateBet({
+            seat: newAction.seat,
+            bet_amount: previousBetAmount,
+            folded: true,
+            allin: false
+        }));
     } 
     // RAISE, ALLIN - reset aggrounds 
     // CALL, CHECK, FOLD - decrement aggrounds
@@ -154,19 +227,35 @@ function updateGameStateWithNewBet(gameState, newAction) {
  * @returns {ServerRequestCall|ServerRequestCheck} - Request object for next player action
  */
 function getNextRequest(gameState) {
-    const hotSeatBet = gameState.bets[gameState.hot_seat];
-    if (hotSeatBet.folded || hotSeatBet.allin || hotSeatBet.bet_amount === gameState.current_bet) {
-        throw new Error('Hot seat player has already acted or is all-in');
+    console.log('getNextRequest called:', {
+        hot_seat: gameState.hot_seat,
+        current_bet: gameState.current_bet,
+        bets: JSON.stringify(gameState.bets)
+    });
+    
+    const hotSeatBet = getBetBySeat(gameState.bets, gameState.hot_seat);
+    console.log('Found hot seat bet:', hotSeatBet);
+    
+    if (!hotSeatBet) {
+        throw new Error(`Hot seat player not found in bets. hot_seat=${gameState.hot_seat}, bets=${JSON.stringify(gameState.bets)}`);
     }
-    const toCall = gameState.current_bet - hotSeatBet.bet_amount;
-    let minRaise = gameState.current_bet * 2 - hotSeatBet.bet_amount;
+    // Only throw if player is folded or all-in
+    // DO NOT throw if bet_amount === current_bet - this happens when BB acts without a raise and can still check/raise
+    if (hotSeatBet.folded || hotSeatBet.allin) {
+        throw new Error('Hot seat player is folded or all-in');
+    }
+    // Ensure to_call is never negative (player may have matched/exceeded current bet)
+    const toCall = Math.max(0, gameState.current_bet - hotSeatBet.bet_amount);
+    // Min raise is the big blind or the current bet, whichever is larger
+    const minRaiseAmount = Math.max(gameState.big_blind, gameState.current_bet);
+    let minRaise = minRaiseAmount + gameState.current_bet - hotSeatBet.bet_amount;
     if (toCall === 0) {
         return new ServerRequestCheck({
             game_id: gameState.game_id,
             seat: gameState.hot_seat,
-            current_bet: gameState.current_bet
+            min_raise: minRaise
         });
-    }else {
+    } else {
         return new ServerRequestCall({
             game_id: gameState.game_id,
             seat: gameState.hot_seat,

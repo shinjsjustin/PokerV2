@@ -40,12 +40,32 @@ socket.on('connect', () => {
         }
     }
     
+    // Fallback: get from table lobby instance
+    if (!currentPlayerId && window.tableLobbyInstance) {
+        currentPlayerId = window.tableLobbyInstance.myPlayerId;
+        currentTableId = window.tableLobbyInstance.tableId;
+    }
+    
+    // Fallback: get player ID directly from localStorage (auth.js getUserData)
+    if (!currentPlayerId && typeof getUserData === 'function') {
+        const userData = getUserData();
+        if (userData?.player_id) {
+            currentPlayerId = userData.player_id;
+        }
+    }
+    
     // Fallback: get from page data attributes if component not ready
     if (!currentTableId) {
         currentTableId = document.body.dataset.tableId;
     }
     if (!currentPlayerId) {
         currentPlayerId = document.body.dataset.playerId;
+    }
+    
+    // Register player with server socket manager (required before joining tables)
+    if (currentPlayerId) {
+        socket.emit('register_player', currentPlayerId);
+        console.log('Registered player:', currentPlayerId);
     }
     
     if (currentTableId) {
@@ -62,6 +82,29 @@ socket.on('connect_error', (err) => {
     console.error('Connection failed:', err.message);
     showConnectionStatus('Connection failed', 'error');
 });
+
+// ═══════════════════════════════════════════════════════════════════
+// LATE REGISTRATION - For when Alpine component initializes after socket connects
+// ═══════════════════════════════════════════════════════════════════
+
+/**
+ * Register player with socket after Alpine component is ready
+ * Call this from Alpine component init() if socket is already connected
+ */
+function lateRegisterSocket(playerId, tableId) {
+    if (socket.connected && playerId && !currentPlayerId) {
+        currentPlayerId = playerId;
+        socket.emit('register_player', playerId);
+        console.log('Late-registered player:', playerId);
+    }
+    
+    if (socket.connected && tableId && !currentTableId) {
+        joinTable(tableId);
+    }
+}
+
+// Expose for use by Alpine components
+window.lateRegisterSocket = lateRegisterSocket;
 
 // ═══════════════════════════════════════════════════════════════════
 // TABLE MANAGEMENT
@@ -119,7 +162,7 @@ socket.on('server_request_check', (packet) => {
     
     currentGameId = packet.game_id;
     
-    if (packet.player_id === currentPlayerId && window.pokerGameInstance) {
+    if (Number(packet.player_id) === Number(currentPlayerId) && window.pokerGameInstance) {
         window.pokerGameInstance.updateActionOptions({
             check: true,
             raise: true,
@@ -149,7 +192,7 @@ socket.on('server_request_call', (packet) => {
     
     currentGameId = packet.game_id;
     
-    if (packet.player_id === currentPlayerId && window.pokerGameInstance) {
+    if (Number(packet.player_id) === Number(currentPlayerId) && window.pokerGameInstance) {
         window.pokerGameInstance.updateActionOptions({
             call: packet.to_call,
             raise: true,
@@ -181,6 +224,16 @@ socket.on('gamestate', (packet) => {
     
     if (window.pokerGameInstance) {
         window.pokerGameInstance.updateGameState(packet);
+    }
+});
+
+// Deal hole cards to player (private - only this player sees their cards)
+socket.on('deal_hole_cards', (packet) => {
+    console.log('Received hole cards:', packet);
+    
+    if (Number(packet.player_id) === Number(currentPlayerId) && window.pokerGameInstance) {
+        // Update the player's hole cards in the game state
+        window.pokerGameInstance.receiveHoleCards(packet.hole_cards, packet.seat_number);
     }
 });
 
@@ -231,6 +284,25 @@ socket.on('server_update_game_end', (packet) => {
             pot: packet.pot
         });
     }
+});
+
+// Game ended - return to table for new round
+socket.on('server_game_ended_return_to_table', (packet) => {
+    console.log('Game ended, returning to table:', packet);
+    
+    // Show brief results before redirecting
+    if (window.pokerGameInstance) {
+        window.pokerGameInstance.showGameEnd({
+            winners: packet.winners,
+            pot: packet.pot,
+            message: packet.message
+        });
+    }
+    
+    // Redirect to table page after short delay to show results
+    setTimeout(() => {
+        window.location.href = `table.html?tableId=${packet.table_id}&gameEnded=true`;
+    }, 3000);
 });
 
 // Add error handling from server

@@ -8,11 +8,15 @@ const Codewords = {
     // Server to Client Action requests
     SERVER_REQUEST_CALL : 'server_request_call',
     SERVER_REQUEST_CHECK: 'server_request_check',
+    
+    // Deal cards to player
+    DEAL_HOLE_CARDS : 'deal_hole_cards',
 
     // Server to Client game state update
     SERVER_UPDATE_LAST_ACTION : 'server_update_last_action', 
     SERVER_UPDATE_STAGE_PROGRESSION : 'server_update_stage_progression',
     SERVER_UPDATE_GAME_END : 'server_update_game_end',
+    SERVER_GAME_ENDED_RETURN_TO_TABLE : 'server_game_ended_return_to_table',
 
     GAMESTATE : 'gamestate',
 
@@ -122,15 +126,16 @@ class PlayerAction {
 // GAME 
 // ═══════════════════════════════════════════════════════════════════
 class GameState {
-    constructor ({game_id, table_id, dealer_seat, max_players, hot_seat, stage, aggrounds, pot, current_bet, bets, community_cards, deck}){
+    constructor ({game_id, table_id, big_blind, dealer_seat, max_players, hot_seat, stage, aggrounds, pot, current_bet, bets, community_cards, deck}){
         this.type = Codewords.GAMESTATE;
         this.game_id = game_id;
         this.table_id = table_id;
+        this.big_blind = big_blind;
         this.dealer_seat = dealer_seat;
         this.max_players = max_players;
         this.hot_seat = hot_seat;
         this.stage = stage; // pre-flop, flop, turn, river
-        this.aggrounds = aggrounds; // array of {player_id, seat, hole_cards}
+        this.aggrounds = aggrounds; // integer - number of rounds needed to progress to next stage
         this.pot = pot;
         this.current_bet = current_bet;
         this.bets = bets; // array of GameStateBet objects
@@ -186,6 +191,17 @@ class ServerUpdateGameEnd {
         this.winner_seat = winner_seat;
         this.winning_hand = winning_hand;
         this.pot = pot;
+    }
+}
+
+class ServerGameEndedReturnToTable {
+    constructor ({table_id, winners, pot, message}){
+        this.type = Codewords.SERVER_GAME_ENDED_RETURN_TO_TABLE;
+        this.table_id = table_id;
+        this.winners = winners; // array of winner objects with player_id, username, amount, hand
+        this.pot = pot;
+        this.message = message || 'Game ended - ready to start new round';
+        this.timestamp = new Date();
     }
 }
 
@@ -249,6 +265,8 @@ function createFromJSON(json){
             return new ServerUpdateStageProgression(data);
         case Codewords.SERVER_UPDATE_GAME_END:
             return new ServerUpdateGameEnd(data);
+        case Codewords.SERVER_GAME_ENDED_RETURN_TO_TABLE:
+            return new ServerGameEndedReturnToTable(data);
         case Codewords.ERROR_MESSAGE:
             return new ErrorMessage(data);
         case Codewords.ACTION_RESPONSE:
@@ -279,6 +297,7 @@ module.exports = {
     ServerUpdateLastAction,
     ServerUpdateStageProgression,
     ServerUpdateGameEnd,
+    ServerGameEndedReturnToTable,
     ErrorMessage,
     ActionResponse,
     RequestGameState,
