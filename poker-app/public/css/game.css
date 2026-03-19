@@ -324,6 +324,37 @@ body {
     border-color: rgba(245, 166, 35, 0.35);
 }
 
+/* ── Action highlights ───────────────────────────── */
+.player-row.action-fold .player-cards {
+    border: 2px solid var(--accent-danger);
+    border-radius: var(--radius-sm);
+    padding: 2px;
+    background: rgba(224, 82, 82, 0.1);
+}
+
+.player-row.action-call .player-cards,
+.player-row.action-check .player-cards {
+    border: 2px solid var(--accent-success);
+    border-radius: var(--radius-sm);
+    padding: 2px;
+    background: rgba(62, 207, 142, 0.1);
+}
+
+.player-row.action-raise .player-cards,
+.player-row.action-bet .player-cards {
+    border: 2px solid var(--accent-info);
+    border-radius: var(--radius-sm);
+    padding: 2px;
+    background: rgba(74, 158, 255, 0.1);
+}
+
+.player-row.action-allin .player-cards {
+    border: 2px solid var(--accent-warn);
+    border-radius: var(--radius-sm);
+    padding: 2px;
+    background: rgba(245, 166, 35, 0.1);
+}
+
 .avatar {
     width: 30px;
     height: 30px;

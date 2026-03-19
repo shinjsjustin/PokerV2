@@ -79,7 +79,7 @@
       </div>
 
       <!-- ② Player list -->
-      <div class="section" x-show="!loading && !error && game && game.players && game.players.length > 0">
+      <div class="section" x-show="game && game.players && game.players.length > 0">
         <div class="label">players</div>
         <div class="players-list">
           <template x-for="p in game.players" :key="p.player_id">
@@ -87,7 +87,12 @@
                  :class="{
                    'is-turn':   p.player_id === game.activePlayerId,
                    'is-folded': p.is_folded,
-                   'is-allin':  p.is_all_in && !p.is_folded
+                   'is-allin':  p.is_all_in && !p.is_folded,
+                   'action-fold': p.lastAction === 'fold',
+                   'action-call': p.lastAction === 'call',
+                   'action-check': p.lastAction === 'check',
+                   'action-raise': p.lastAction === 'raise' || p.lastAction === 'bet',
+                   'action-allin': p.lastAction === 'allin'
                  }">
 
               <div class="avatar" x-text="initials(p.username)"></div>
@@ -130,7 +135,7 @@
       </div>
 
       <!-- ③ Your hand (only shown when you're in the hand) -->
-      <div class="section" x-show="!loading && !error && game && game.players && myPlayerId && myPlayer && !myPlayer.is_folded">
+      <div class="section" x-show="game && game.players && myPlayerId && myPlayer && !myPlayer.is_folded">
         <div class="label">your hand</div>
         <div class="hand-row">
           <template x-if="myPlayer?.hole_cards">

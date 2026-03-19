@@ -53,7 +53,10 @@ class GameSocketManager {
      * Send full game state to all players at table
      */
     sendGameState(tableId, gameStateData) {
-        const packet = new GameState(gameStateData);
+        // Pass data directly - do NOT wrap in new GameState() as that constructor
+        // only captures internal engine fields and silently strips UI fields like
+        // players, tableName, activePlayerId, dealerSeat, sbSeat, bbSeat, etc.
+        const packet = { type: PackageType.GAMESTATE, ...gameStateData };
         console.log(`Broadcasting game state to table ${tableId}:`, {
             game_id: packet.game_id,
             stage: packet.stage,
@@ -68,7 +71,8 @@ class GameSocketManager {
      * Send full game state to a specific player
      */
     sendGameStateToPlayer(socket, gameStateData) {
-        const packet = new GameState(gameStateData);
+        // Pass data directly - do NOT wrap in new GameState() (same reason as sendGameState)
+        const packet = { type: PackageType.GAMESTATE, ...gameStateData };
         socket.emit(PackageType.GAMESTATE, packet);
     }
 

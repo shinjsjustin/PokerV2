@@ -259,12 +259,41 @@ socket.on('gamestate_bet', (packet) => {
 socket.on('server_update_last_action', (packet) => {
     console.log('Last action:', packet);
     if (window.pokerGameInstance) {
+        let actionType = '';
         let actionText = '';
-        if (packet.folded) actionText = `Seat ${packet.seat} folded`;
-        else if (packet.allin) actionText = `Seat ${packet.seat} went all-in (${packet.bet_amount})`;
-        else if (packet.bet_amount > 0) actionText = `Seat ${packet.seat} bet ${packet.bet_amount}`;
-        else actionText = `Seat ${packet.seat} checked`;
         
+        // Determine action type from available packet data
+        if (packet.folded) {
+            actionType = 'fold';
+            actionText = `Seat ${packet.seat} folded`;
+        } else if (packet.allin) {
+            actionType = 'allin';
+            actionText = `Seat ${packet.seat} went all-in (${packet.bet_amount})`;
+        } else if (packet.bet_amount > 0) {
+            // Without additional info from server, we'll use 'raise' for any bet > 0
+            // The server could be enhanced to send action_type to distinguish call/raise/bet
+            actionType = 'raise';
+            actionText = `Seat ${packet.seat} bet ${packet.bet_amount}`;
+        } else {
+            actionType = 'check';
+            actionText = `Seat ${packet.seat} checked`;
+        }
+        
+        // Find player ID from seat number
+        const playerId = window.pokerGameInstance.findPlayerBySeat(packet.seat);
+        
+        // Use new action highlighting system
+        if (playerId) {
+            window.pokerGameInstance.receivePlayerAction({
+                player_id: playerId,
+                seat: packet.seat,
+                action_type: actionType,
+                amount: packet.bet_amount || 0,
+                player_name: `Seat ${packet.seat}`
+            });
+        }
+        
+        // Also add to action history for backward compatibility
         window.pokerGameInstance.addAction({
             seat: packet.seat,
             action: actionText,

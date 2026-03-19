@@ -30,6 +30,8 @@ function pokerGame() {
     messages: [],
     lastActions: [],
     myHoleCards: null, // Player's private hole cards from server
+    currentStage: null, // Track current stage for highlight clearing
+    playerActions: new Map(), // Track last action for each player
 
     // ── Simple Getters (no computation) ───────────────
     get myPlayer() {
@@ -280,6 +282,44 @@ function pokerGame() {
       console.log('Poker game component destroyed');
     },
 
+    // ── Action Highlighting Methods ──────────────────
+    preserveActionHighlights(newPlayers) {
+      // Copy lastAction from existing players to new player data
+      if (this.game && this.game.players) {
+        newPlayers.forEach(newPlayer => {
+          const existingPlayer = this.game.players.find(p => p.player_id === newPlayer.player_id);
+          if (existingPlayer && existingPlayer.lastAction) {
+            newPlayer.lastAction = existingPlayer.lastAction;
+          }
+        });
+      }
+    },
+
+    clearActionHighlights() {
+      if (this.game && this.game.players) {
+        this.game.players.forEach(player => {
+          player.lastAction = null;
+        });
+      }
+      this.playerActions.clear();
+    },
+
+    highlightPlayerAction(playerId, actionType, seatNumber) {
+      console.log('Highlighting action:', { playerId, actionType, seatNumber });
+      
+      // Store the action for this player
+      this.playerActions.set(playerId, actionType);
+      
+      // Update the player in the game state with the visual highlight
+      if (this.game && this.game.players) {
+        const player = this.game.players.find(p => p.player_id === playerId);
+        if (player) {
+          player.lastAction = actionType;
+          console.log('Applied action highlight to player:', player.username, actionType);
+        }
+      }
+    },
+
     // ── Server Data Handlers ──────────────────────────
     // These methods receive computed data from server and update UI
     
@@ -289,9 +329,22 @@ function pokerGame() {
       // CRITICAL FIX: Preserve existing game state to prevent UI flicker
       // Only update if we have valid data to prevent PLAYERS/YOUR HAND from hiding
       if (serverData && typeof serverData === 'object') {
+        // Check if stage has progressed - clear action highlights if so
+        if (this.game && this.game.stage && serverData.stage !== this.game.stage) {
+          console.log('Stage progressed from', this.game.stage, 'to', serverData.stage, '- clearing action highlights');
+          this.clearActionHighlights();
+        }
+        
+        // Preserve action highlights by merging them into the new player data
+        if (this.game && this.game.players && serverData.players) {
+          this.preserveActionHighlights(serverData.players);
+        }
+        
         // Server provides fully computed game state - just display it
+        const previousGame = this.game;
         this.game = serverData;
         this.gameId = serverData.game_id;
+        this.currentStage = serverData.stage;
         
         // Never allow loading/error to show when we have valid game data
         this.loading = false;
@@ -356,6 +409,11 @@ function pokerGame() {
         }
       } else {
         console.warn('Invalid game state data received:', serverData);
+        // Only set error if we don't have existing valid game state
+        if (!this.game) {
+          this.error = 'Invalid game state received';
+          this.loading = false;
+        }
       }
     },
 
@@ -454,6 +512,11 @@ function pokerGame() {
         ...action
       });
       
+      // Highlight the player's action if we have the necessary info
+      if (action.player_id && action.action_type && action.seat_number) {
+        this.highlightPlayerAction(action.player_id, action.action_type, action.seat_number);
+      }
+      
       // Keep only last 10 actions
       if (this.lastActions.length > 10) {
         this.lastActions = this.lastActions.slice(0, 10);
@@ -485,7 +548,27 @@ function pokerGame() {
       }
     },
     
-    // ── Utility Methods ───────────────────────────────
+    // Server Communication (called by socket-client.js)
+    receivePlayerAction(actionData) {
+      console.log('Received player action:', actionData);
+      
+      // Add to action history with highlighting
+      this.addAction({
+        player_id: actionData.player_id,
+        seat_number: actionData.seat,
+        action_type: actionData.action_type,
+        amount: actionData.amount,
+        timestamp: new Date()
+      });
+      
+      this.addMessage({
+        type: 'action',
+        text: `${actionData.player_name || 'Player'} ${actionData.action_type}${actionData.amount ? ' ' + actionData.amount : ''}`,
+        timestamp: new Date()
+      });
+    },
+    
+    // ── Utility Methods ─────────────────────────────────────────
     // Helper to find player by seat (minimal logic)
     findPlayerBySeat(seatNumber) {
       if (!this.game?.players || !seatNumber) return null;
