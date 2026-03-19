@@ -48,10 +48,11 @@ app.use(session({
 }));
 
 io.on('connection', (socket) => {
-  console.log('a user connected:', socket.id);
+  console.log('[SERVER] Socket connected:', socket.id);
   
   // Player registers after authenticating on client side
   socket.on('register_player', (playerId) => {
+    console.log(`[SERVER] Player ${playerId} registering socket ${socket.id}`);
     tableSocketManager.setupListeners(socket, playerId);
     
     // Setup game socket listener for game state requests
@@ -119,10 +120,10 @@ io.on('connection', (socket) => {
       }
     });
     
-    console.log(`Player ${playerId} registered with socket ${socket.id}`);
+    console.log(`[SERVER] Player ${playerId} fully registered`);
   });
   
-  socket.on('disconnect', () => console.log('user disconnected:', socket.id));
+  socket.on('disconnect', () => console.log('[SERVER] Socket disconnected:', socket.id));
 });
 
 // Routes

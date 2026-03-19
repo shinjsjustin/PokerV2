@@ -345,6 +345,18 @@ function pokerGame() {
         this.game = serverData;
         this.gameId = serverData.game_id;
         this.currentStage = serverData.stage;
+
+        // FIX: Server broadcasts always send hole_cards: null for privacy.
+        // Restore this player's hole cards from the locally-cached copy so
+        // they don't disappear every time any player takes an action.
+        if (this.myHoleCards && this.game.players && this.myPlayerId) {
+          const myPlayer = this.game.players.find(
+            p => Number(p.player_id) === Number(this.myPlayerId)
+          );
+          if (myPlayer && !myPlayer.hole_cards) {
+            myPlayer.hole_cards = this.myHoleCards;
+          }
+        }
         
         // Never allow loading/error to show when we have valid game data
         this.loading = false;
@@ -426,8 +438,12 @@ function pokerGame() {
       console.log('Received hole cards:', holeCards, 'at seat:', seatNumber);
       
       // Update the player's hole cards in the game state
+      // FIX: Use Number() to ensure consistent type comparison (player_id may be
+      //      a string from the server but myPlayerId may be a number or vice versa).
       if (this.game && this.game.players) {
-        const myPlayer = this.game.players.find(p => p.player_id === this.myPlayerId);
+        const myPlayer = this.game.players.find(
+          p => Number(p.player_id) === Number(this.myPlayerId)
+        );
         if (myPlayer) {
           myPlayer.hole_cards = holeCards;
         }

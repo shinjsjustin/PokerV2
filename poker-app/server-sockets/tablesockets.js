@@ -29,11 +29,10 @@ class TableSocketManager {
      * Register a player's socket connection
      */
     registerPlayer(socket, playerId) {
-        // Ensure playerId is stored as a number for consistent lookups
         const pid = Number(playerId);
         this.playerSockets.set(pid, socket.id);
         this.socketPlayers.set(socket.id, pid);
-        
+        console.log(`[SOCKET:table] Registered player ${pid} → socket ${socket.id}`);
         socket.on('disconnect', () => this.handleDisconnect(socket));
     }
 
@@ -45,6 +44,7 @@ class TableSocketManager {
         if (!playerId) return;
 
         const tableId = this.playerTables.get(playerId);
+        console.log(`[SOCKET:table] Player ${playerId} disconnected (table=${tableId || 'none'})`);
         if (tableId) {
             this.leaveTable(playerId, tableId);
         }
@@ -93,7 +93,7 @@ class TableSocketManager {
         }
         this.tables.get(tableId).add(pid);
 
-        console.log(`Player ${pid} successfully joined table ${tableId} room. Table now has ${this.tables.get(tableId).size} players.`);
+        console.log(`[SOCKET:table] Player ${pid} joined table ${tableId} (${this.tables.get(tableId).size} players in room)`);
 
         // Notify table of new player
         this.sendToTable(tableId, `Player ${pid} has joined the table`);
@@ -120,6 +120,7 @@ class TableSocketManager {
             }
         }
 
+        console.log(`[SOCKET:table] Player ${pid} left table ${tableId}`);
         // Notify table of player leaving
         this.sendToTable(tableId, `Player ${pid} has left the table`);
 

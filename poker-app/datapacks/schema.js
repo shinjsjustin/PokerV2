@@ -102,6 +102,7 @@ class PlayerAction {
     constructor ({game_id, seat, current_bet, player_bet, allin}){
         this.game_id = game_id;
         this.seat = seat;
+        this.current_bet = current_bet; // the table's current_bet at the time of the action
         this.player_bet = player_bet;
 
         if (allin){

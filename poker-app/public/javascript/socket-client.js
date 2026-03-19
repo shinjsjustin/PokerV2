@@ -26,7 +26,7 @@ let gameState = null;
 let currentPlayerSeat = null;
 
 socket.on('connect', () => {
-    console.log('Connected to server:', socket.id);
+    console.log('[SOCKET] Connected to server:', socket.id);
     
     // Get table and player info from Alpine.js component
     if (window.pokerGameInstance) {
@@ -65,7 +65,7 @@ socket.on('connect', () => {
     // Register player with server socket manager (required before joining tables)
     if (currentPlayerId) {
         socket.emit('register_player', currentPlayerId);
-        console.log('Registered player:', currentPlayerId);
+        console.log('[SOCKET] Registered player:', currentPlayerId);
     }
     
     if (currentTableId) {
@@ -74,12 +74,12 @@ socket.on('connect', () => {
 });
 
 socket.on('disconnect', (reason) => {
-    console.log('Disconnected:', reason);
+    console.warn('[SOCKET] Disconnected:', reason);
     showConnectionStatus('Disconnected - Reconnecting...', 'warning');
 });
 
 socket.on('connect_error', (err) => {
-    console.error('Connection failed:', err.message);
+    console.error('[SOCKET] Connection failed:', err.message);
     showConnectionStatus('Connection failed', 'error');
 });
 
@@ -95,7 +95,7 @@ function lateRegisterSocket(playerId, tableId) {
     if (socket.connected && playerId && !currentPlayerId) {
         currentPlayerId = playerId;
         socket.emit('register_player', playerId);
-        console.log('Late-registered player:', playerId);
+        console.log('[SOCKET] Late-registered player:', playerId);
     }
     
     if (socket.connected && tableId && !currentTableId) {
@@ -113,7 +113,7 @@ window.lateRegisterSocket = lateRegisterSocket;
 function joinTable(tableId) {
     socket.emit('join_table', tableId);
     currentTableId = tableId;
-    console.log(`Joining table: ${tableId} - socket connected: ${socket.connected}`);
+    console.log(`[SOCKET] Joining table ${tableId} | connected=${socket.connected}`);
 }
 
 function leaveTable() {
@@ -152,7 +152,7 @@ socket.on('player_to_player_message', (packet) => {
 
 // Server requests check/raise/allin (no bet to call)
 socket.on('server_request_check', (packet) => {
-    console.log('Action requested - Check scenario:', packet);
+    console.log('[SOCKET] server_request_check:', { player_id: packet.player_id, seat: packet.seat, min_raise: packet.min_raise });
     
     // Validate packet structure
     if (!packet.game_id || !packet.player_id || packet.seat === undefined) {
@@ -182,7 +182,7 @@ socket.on('server_request_check', (packet) => {
 
 // Server requests call/raise/fold/allin
 socket.on('server_request_call', (packet) => {
-    console.log('Action requested - Call scenario:', packet);
+    console.log('[SOCKET] server_request_call:', { player_id: packet.player_id, seat: packet.seat, to_call: packet.to_call, min_raise: packet.min_raise });
     
     // Validate packet structure
     if (!packet.game_id || !packet.player_id || packet.seat === undefined) {
@@ -218,13 +218,8 @@ socket.on('server_request_call', (packet) => {
 
 // Full game state update - call new updateGameState method
 socket.on('gamestate', (packet) => {
-    console.log('Game state update received:', {
-        game_id: packet.game_id,
-        stage: packet.stage,
-        pot: packet.pot,
-        community_cards: packet.community_cards,
-        players_count: packet.players?.length || 0
-    });
+    console.log('[SOCKET] gamestate update | game=%d stage=%d pot=%d players=%d active=%s',
+        packet.game_id, packet.stage, packet.pot, packet.players?.length || 0, packet.activePlayerId);
     gameState = packet;
     currentGameId = packet.game_id;
     
@@ -237,7 +232,7 @@ socket.on('gamestate', (packet) => {
 
 // Deal hole cards to player (private - only this player sees their cards)
 socket.on('deal_hole_cards', (packet) => {
-    console.log('Received hole cards:', packet);
+    console.log('[SOCKET] deal_hole_cards for player', packet.player_id, 'at seat', packet.seat_number);
     
     if (Number(packet.player_id) === Number(currentPlayerId) && window.pokerGameInstance) {
         // Update the player's hole cards in the game state
@@ -257,7 +252,8 @@ socket.on('gamestate_bet', (packet) => {
 
 // Last action announcement
 socket.on('server_update_last_action', (packet) => {
-    console.log('Last action:', packet);
+    console.log('[SOCKET] server_update_last_action | seat=%d bet=%d allin=%s folded=%s',
+        packet.seat, packet.bet_amount, packet.allin, packet.folded);
     if (window.pokerGameInstance) {
         let actionType = '';
         let actionText = '';
@@ -304,11 +300,8 @@ socket.on('server_update_last_action', (packet) => {
 
 // Stage progression (flop, turn, river)
 socket.on('server_update_stage_progression', (packet) => {
-    console.log('Stage progression received:', {
-        game_id: packet.game_id,
-        stage: packet.stage,
-        community_cards: packet.community_cards ? packet.community_cards.length : 0
-    });
+    console.log('[SOCKET] server_update_stage_progression | game=%d stage=%d cards=%d',
+        packet.game_id, packet.stage, packet.community_cards?.length || 0);
     if (window.pokerGameInstance) {
         // Note: With updated server, full game state should be sent after stage progression
         // But keep the fallback request just in case
@@ -321,7 +314,8 @@ socket.on('server_update_stage_progression', (packet) => {
 
 // Game end
 socket.on('server_update_game_end', (packet) => {
-    console.log('Game ended:', packet);
+    console.log('[SOCKET] server_update_game_end | winner_seat=%d hand=%s pot=%d',
+        packet.winner_seat, packet.winning_hand, packet.pot);
     if (window.pokerGameInstance) {
         window.pokerGameInstance.showGameEnd({
             winnerSeat: packet.winner_seat,
@@ -333,7 +327,7 @@ socket.on('server_update_game_end', (packet) => {
 
 // Game ended - return to table for new round
 socket.on('server_game_ended_return_to_table', (packet) => {
-    console.log('Game ended, returning to table:', packet);
+    console.log('[SOCKET] server_game_ended_return_to_table | table=%d pot=%d', packet.table_id, packet.pot);
     
     // Show brief results before redirecting
     if (window.pokerGameInstance) {
@@ -352,7 +346,7 @@ socket.on('server_game_ended_return_to_table', (packet) => {
 
 // Add error handling from server
 socket.on('error_message', (packet) => {
-    console.error('Server error:', packet);
+    console.error('[SOCKET] error_message:', packet.message);
     if (window.pokerGameInstance) {
         window.pokerGameInstance.setError(packet.message || 'Server error occurred');
     }
@@ -360,7 +354,7 @@ socket.on('error_message', (packet) => {
 
 // Add action response from server
 socket.on('action_response', (packet) => {
-    console.log('Action response:', packet);
+    console.log('[SOCKET] action_response | success=%s error=%s', packet.success, packet.error || 'none');
     if (window.pokerGameInstance) {
         if (packet.success) {
             window.pokerGameInstance.clearError();

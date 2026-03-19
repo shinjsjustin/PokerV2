@@ -20,7 +20,7 @@ const {
     PackageType
 } = require('../datapacks/schema');
 
-const { updateGameStateWithNewBet, getNextRequest, determineWinner } = require('../engine/gamelogic');
+const { updateGameStateWithNewBet, getNextRequest, determineWinner, dealAllRemainingCommunityCards } = require('../engine/gamelogic');
 
 // Middleware to verify JWT token
 const authenticateToken = (req, res, next) => {
@@ -61,11 +61,12 @@ router.get('/', authenticateToken, async (req, res) => {
             values = [game_id];
         } else {
             // Get the most recent active game for the table
+            // stage is an integer: 0=pre-flop, 1=flop, 2=turn, 3=river, 4=game-over
             query = `
                 SELECT game_id, table_id, big_blind, pot, community_cards, stage, dealer_seat, hot_seat, aggrounds, current_bet, bets, deck, max_players
                 FROM gamestate
-                WHERE table_id = ? AND stage != 'game_over'
-                ORDER BY created_at DESC
+                WHERE table_id = ? AND stage < 4
+                ORDER BY started_at DESC
                 LIMIT 1
             `;
             values = [table_id];
@@ -501,9 +502,10 @@ router.delete('/', authenticateToken, async (req, res) => {
         let values;
 
         if (game_id) {
-            // First clear game info from players in this game
+            // Clear game-specific data from players (is_folded/is_all_in live in
+            // the bets JSON on gamestate, not as columns on players)
             await db.execute(
-                'UPDATE players SET game_id = NULL, hole_cards = NULL, is_folded = NULL, is_all_in = NULL, current_bet = NULL WHERE game_id = ?',
+                'UPDATE players SET game_id = NULL, hole_cards = NULL, current_bet = NULL WHERE game_id = ?',
                 [game_id]
             );
             // Then delete the game
@@ -514,7 +516,7 @@ router.delete('/', authenticateToken, async (req, res) => {
             const [games] = await db.execute('SELECT game_id FROM gamestate WHERE table_id = ?', [table_id]);
             for (const game of games) {
                 await db.execute(
-                    'UPDATE players SET game_id = NULL, hole_cards = NULL, is_folded = NULL, is_all_in = NULL, current_bet = NULL WHERE game_id = ?',
+                    'UPDATE players SET game_id = NULL, hole_cards = NULL, current_bet = NULL WHERE game_id = ?',
                     [game.game_id]
                 );
             }
@@ -541,23 +543,27 @@ router.delete('/', authenticateToken, async (req, res) => {
 
 // Process player action and broadcast to table via sockets
 router.post('/action', authenticateToken, async (req, res) => {
+    const TAG = '[GAME:action]';
     try {
         const { game_id, seat, current_bet, player_bet, allin } = req.body;
         const playerId = req.user.playerId;
 
-        // Validate required fields
+        console.log(`${TAG} player=${playerId} game=${game_id} seat=${seat} player_bet=${player_bet} allin=${allin}`);
+
         if (!game_id || seat === undefined || current_bet === undefined || player_bet === undefined) {
             return res.status(400).json({ message: 'Missing required action parameters' });
         }
 
         const newAction = new PlayerAction({ game_id, seat, current_bet, player_bet, allin });
-        console.log('Processing player action:', newAction);
 
-        // Fetch current game state 
+        // FIX: JOIN with tables to obtain table_name and small_blind so that
+        //      socket broadcasts can include the same metadata as the HTTP endpoint.
         const [gameRows] = await db.execute(`
             SELECT g.game_id, g.table_id, g.big_blind, g.dealer_seat, g.hot_seat, g.stage, g.max_players,
-                   g.aggrounds, g.pot, g.current_bet, g.bets, g.community_cards, g.deck
+                   g.aggrounds, g.pot, g.current_bet, g.bets, g.community_cards, g.deck,
+                   t.name AS table_name, t.small_blind
             FROM gamestate g
+            JOIN tables t ON g.table_id = t.table_id
             WHERE g.game_id = ?
         `, [game_id]);
 
@@ -566,331 +572,270 @@ router.post('/action', authenticateToken, async (req, res) => {
         }
 
         const gameRow = gameRows[0];
+        console.log(`${TAG} DB state: stage=${gameRow.stage} hot_seat=${gameRow.hot_seat} pot=${gameRow.pot} current_bet=${gameRow.current_bet}`);
 
-        // Parse JSON fields for game state (aggrounds is an integer, not JSON)
         const oldGameStateData = {
             ...gameRow,
-            bets: typeof gameRow.bets === 'string' ? JSON.parse(gameRow.bets) : gameRow.bets,
+            bets:            typeof gameRow.bets            === 'string' ? JSON.parse(gameRow.bets)            : gameRow.bets,
             community_cards: typeof gameRow.community_cards === 'string' ? JSON.parse(gameRow.community_cards) : gameRow.community_cards,
-            deck: typeof gameRow.deck === 'string' ? JSON.parse(gameRow.deck) : gameRow.deck
+            deck:            typeof gameRow.deck            === 'string' ? JSON.parse(gameRow.deck)            : gameRow.deck
         };
 
+        const previousPot = oldGameStateData.pot;
         const oldGameState = new GameState(oldGameStateData);
 
-        // Process the action with game engine
+        // ── Engine ───────────────────────────────────────────────────
         const { gameState, proceedResult, lastAction } = updateGameStateWithNewBet(oldGameState, newAction);
 
-        // Start database transaction
-        await db.query('START TRANSACTION');
+        // FIX: chips this player put into the pot this action = delta in pot total
+        const chipsDeducted = gameState.pot - previousPot;
+        console.log(`${TAG} proceedResult=${proceedResult} chipsDeducted=${chipsDeducted} pot=${gameState.pot}`);
 
+        // ── DB Transaction ───────────────────────────────────────────
+        await db.query('START TRANSACTION');
         try {
-            // Update game state in database
-            const updateQuery = `
-                UPDATE gamestate 
-                SET pot = ?, current_bet = ?, aggrounds = ?, stage = ?, hot_seat = ?, 
+            await db.execute(`
+                UPDATE gamestate
+                SET pot = ?, current_bet = ?, aggrounds = ?, stage = ?, hot_seat = ?,
                     bets = ?, community_cards = ?, deck = ?, max_players = ?
                 WHERE game_id = ?
-            `;
-
-            await db.execute(updateQuery, [
-                gameState.pot,
-                gameState.current_bet,
-                gameState.aggrounds,
-                gameState.stage,
-                gameState.hot_seat,
-                JSON.stringify(gameState.bets),
-                JSON.stringify(gameState.community_cards),
-                JSON.stringify(gameState.deck),
-                gameState.max_players,
-                game_id
+            `, [
+                gameState.pot, gameState.current_bet, gameState.aggrounds, gameState.stage,
+                gameState.hot_seat, JSON.stringify(gameState.bets), JSON.stringify(gameState.community_cards),
+                JSON.stringify(gameState.deck), gameState.max_players, game_id
             ]);
 
-            // Commit database changes
-            await db.query('COMMIT');
-
-            // Broadcast action to table via sockets
-            if (lastAction) {
-                gameSocketManager.sendLastAction(gameState.table_id, {
-                    game_id: game_id,
-                    seat: seat,
-                    bet_amount: lastAction.bet_amount || 0,
-                    allin: lastAction.allin || false,
-                    folded: lastAction.folded || false
-                });
-            }
-
-            // Send success response to acting player
-            const playerSocket = tableSocketManager.getSocket(playerId);
-            if (playerSocket) {
-                gameSocketManager.sendActionResponse(playerSocket, true, null, game_id, playerId);
-            }
-
-            res.json({
-                success: true,
-                message: 'Action processed successfully',
-                gameState: gameState
-            });
-
-            // -- Game Progression (handle errors separately to avoid double response) --
-            try {
-                if (proceedResult === 1) {
-                    // Send stage progression notification
-                    gameSocketManager.sendStageProgression(gameState.table_id, {
-                        game_id: game_id,
-                        stage: gameState.stage,
-                        community_cards: gameState.community_cards
-                    });
-                    
-                    // CRITICAL: Send complete updated game state with community cards
-                    // Build game state data for broadcasting
-                    const [playersForBroadcast] = await db.execute(`
-                    SELECT player_id, username, seat_number, chip_balance, current_bet
-                    FROM players 
-                    WHERE game_id = ?
-                    ORDER BY seat_number
-                `, [game_id]);
-                
-                const gameStateForBroadcast = {
-                    game_id: game_id,
-                    table_id: gameState.table_id,
-                    pot: gameState.pot,
-                    current_bet: gameState.current_bet,
-                    stage: gameState.stage,
-                    dealerSeat: gameState.dealer_seat,
-                    activePlayerId: null, // No active player during stage transition
-                    community_cards: gameState.community_cards,
-                    players: playersForBroadcast.map(p => {
-                        const bet = gameState.bets.find(b => b.seat === p.seat_number) || {};
-                        return {
-                            player_id: p.player_id,
-                            username: p.username,
-                            seat_number: p.seat_number,
-                            chip_balance: p.chip_balance,
-                            current_bet: bet.bet_amount || 0,
-                            is_folded: bet.folded || false,
-                            is_all_in: bet.allin || false,
-                            hole_cards: null // Don't expose hole cards in broadcast
-                        };
-                    })
-                };
-                
-                // Broadcast updated game state to all players at table
-                gameSocketManager.sendGameState(gameState.table_id, gameStateForBroadcast);
-            }
-            if (proceedResult === 0 || proceedResult === 1) {
-                const nextRequest = getNextRequest(gameState);
-                
-                // Find the player at the next seat to send them the action request
-                const [nextPlayerRows] = await db.execute(
-                    'SELECT player_id FROM players WHERE game_id = ? AND seat_number = ?',
-                    [game_id, nextRequest.seat]
-                );
-                
-                if (nextPlayerRows.length > 0) {
-                    const nextPlayerId = nextPlayerRows[0].player_id;
-                    const nextPlayerSocket = tableSocketManager.getSocket(nextPlayerId);
-                    
-                    if (nextPlayerSocket) {
-                        if (nextRequest.type === PackageType.SERVER_REQUEST_CALL) {
-                            gameSocketManager.requestCall(nextPlayerSocket, {
-                                game_id: game_id,
-                                player_id: nextPlayerId,
-                                seat: nextRequest.seat,
-                                min_raise: nextRequest.min_raise,
-                                to_call: nextRequest.to_call
-                            });
-                        } else if (nextRequest.type === PackageType.SERVER_REQUEST_CHECK) {
-                            gameSocketManager.requestCheck(nextPlayerSocket, {
-                                game_id: game_id,
-                                player_id: nextPlayerId,
-                                seat: nextRequest.seat,
-                                min_raise: nextRequest.min_raise
-                            });
-                        } else {
-                            console.error('Invalid next request type:', nextRequest.type);
-                        }
-                    } else {
-                        console.log('Next player socket not found, player_id:', nextPlayerId);
-                    }
-                } else {
-                    console.error('No player found at seat:', nextRequest.seat);
-                }
-                
-                // CRITICAL: Broadcast updated game state after every action
-                // This ensures all players see pot changes, bets, community cards, etc.
-                const [playersForBroadcast] = await db.execute(`
-                    SELECT player_id, username, seat_number, chip_balance, current_bet
-                    FROM players 
-                    WHERE game_id = ?
-                    ORDER BY seat_number
-                `, [game_id]);
-                
-                const gameStateForBroadcast = {
-                    game_id: game_id,
-                    table_id: gameState.table_id,
-                    pot: gameState.pot,
-                    current_bet: gameState.current_bet,
-                    stage: gameState.stage,
-                    dealerSeat: gameState.dealer_seat,
-                    activePlayerId: nextPlayerRows.length > 0 ? nextPlayerRows[0].player_id : null,
-                    community_cards: gameState.community_cards,
-                    players: playersForBroadcast.map(p => {
-                        const bet = gameState.bets.find(b => b.seat === p.seat_number) || {};
-                        return {
-                            player_id: p.player_id,
-                            username: p.username,
-                            seat_number: p.seat_number,
-                            chip_balance: p.chip_balance,
-                            current_bet: bet.bet_amount || 0,
-                            is_folded: bet.folded || false,
-                            is_all_in: bet.allin || false,
-                            hole_cards: null // Don't expose hole cards in broadcast
-                        };
-                    })
-                };
-                
-                // Broadcast updated game state to all players at table
-                gameSocketManager.sendGameState(gameState.table_id, gameStateForBroadcast);
-            }
-            if (proceedResult === -1) {
-                const seatsInGame = gameState.bets.filter(b => !b.folded).map(b => b.seat);
-                console.log('Seats in game for showdown:', seatsInGame);
-                
-                // fetch hole cards from remaining players in game for showdown
-                const [playerRows] = await db.execute(`
-                        SELECT player_id, hole_cards 
-                        FROM players 
-                        WHERE game_id = ? AND seat_number IN (${seatsInGame.join(',')})
-                    `, [game_id]);
-                
-                console.log('Raw player rows from database:', playerRows.map(row => ({
-                    player_id: row.player_id,
-                    hole_cards_raw: row.hole_cards,
-                    hole_cards_type: typeof row.hole_cards
-                })));
-                
-                const playerCards = playerRows.map(row => {
-                    let holeCards;
-                    console.log(`Processing hole cards for player ${row.player_id}:`, row.hole_cards);
-                    try {
-                        // Handle different hole_cards formats that might be in the database
-                        if (typeof row.hole_cards === 'string') {
-                            console.log(`Hole cards is string: "${row.hole_cards}"`);
-                            // Try to parse as JSON first
-                            if (row.hole_cards.startsWith('[') && row.hole_cards.endsWith(']')) {
-                                console.log('Parsing as JSON array');
-                                holeCards = JSON.parse(row.hole_cards);
-                            } else if (row.hole_cards.includes(',')) {
-                                // Handle comma-separated format like "Tc,2d"
-                                console.log('Parsing as comma-separated string');
-                                holeCards = row.hole_cards.split(',').map(card => card.trim());
-                            } else {
-                                // Single card or other format
-                                console.log('Treating as single card');
-                                holeCards = [row.hole_cards];
-                            }
-                        } else if (Array.isArray(row.hole_cards)) {
-                            console.log('Hole cards is already an array');
-                            holeCards = row.hole_cards;
-                        } else {
-                            console.error('Unexpected hole_cards format:', row.hole_cards);
-                            holeCards = [];
-                        }
-                        console.log(`Final parsed hole cards for player ${row.player_id}:`, holeCards);
-                    } catch (parseError) {
-                        console.error('Error parsing hole_cards for player', row.player_id, ':', parseError);
-                        console.error('Raw hole_cards data:', row.hole_cards);
-                        holeCards = [];
-                    }
-                    
-                    return {
-                        player_id: row.player_id,
-                        hole_cards: holeCards
-                    };
-                });
-                const winners = determineWinner(playerCards, gameState.community_cards);
-                
-                // Send individual game end for each winner (schema expects single winner)
-                // If multiple winners, send the first one for the main event
-                const primaryWinner = winners[0];
-                gameSocketManager.sendGameEnd(gameState.table_id, {
-                    game_id: game_id,
-                    winner_seat: primaryWinner.seat || primaryWinner.player_id, // Use seat if available
-                    winning_hand: primaryWinner.winning_hand || primaryWinner.hand || 'High Card',
-                    pot: gameState.pot
-                });
-
-                // 1. Distribute pot to winners based on their share
-                let remainingPot = gameState.pot;
-                for (let i = 0; i < winners.length; i++) {
-                    const winner = winners[i];
-                    let amount;
-                    if (i === winners.length - 1) {
-                        // Last winner gets remainder (handles rounding)
-                        amount = remainingPot;
-                    } else {
-                        amount = Math.floor(gameState.pot * winner.share);
-                        remainingPot -= amount;
-                    }
-                    
-                    await db.execute(
-                        'UPDATE players SET chip_balance = chip_balance + ? WHERE player_id = ?',
-                        [amount, winner.player_id]
-                    );
-                }
-
-                // 2. Move dealer seat forward on the table (wrap around)
-                const newDealerSeat = (gameState.dealer_seat % gameState.max_players) + 1;
+            // FIX: Keep player chip_balance in sync with every bet/call/raise.
+            //      Previously chips were only deducted for blinds at game start.
+            if (chipsDeducted > 0) {
                 await db.execute(
-                    'UPDATE tables SET dealer_seat = ? WHERE table_id = ?',
-                    [newDealerSeat, gameState.table_id]
+                    'UPDATE players SET chip_balance = chip_balance - ?, current_bet = ? WHERE player_id = ?',
+                    [chipsDeducted, player_bet, playerId]
                 );
+                console.log(`${TAG} Deducted ${chipsDeducted} chips from player ${playerId}`);
+            } else if (player_bet === -1) {
+                await db.execute('UPDATE players SET current_bet = 0 WHERE player_id = ?', [playerId]);
+            }
 
-                // 3. Notify players game ended and redirect to table for new round
-                gameSocketManager.sendGameEndedReturnToTable(gameState.table_id, {
-                    winners: winners,
-                    pot: gameState.pot,
-                    message: 'Game ended - ready to start new round'
-                });
-            }
-            
-            } catch (gameProgressionError) {
-                // Log game progression errors but don't send HTTP response (already sent)
-                console.error('Error in game progression after successful action:', gameProgressionError);
-                
-                // Still send error to players via socket for UI feedback
-                const playerId = req.user?.playerId;
-                if (playerId) {
-                    const playerSocket = tableSocketManager.getSocket(playerId);
-                    if (playerSocket) {
-                        gameSocketManager.sendError(playerSocket, 'Game progression error', req.body.game_id, playerId);
-                    }
-                }
-            }
-            
+            await db.query('COMMIT');
+            console.log(`${TAG} DB transaction committed`);
         } catch (dbError) {
             await db.query('ROLLBACK');
             throw dbError;
         }
 
-    } catch (error) {
-        console.error('Error processing player action:', error);
+        // ── Respond + notify ─────────────────────────────────────────
+        if (lastAction) {
+            gameSocketManager.sendLastAction(gameState.table_id, {
+                game_id, seat,
+                bet_amount: lastAction.bet_amount || 0,
+                allin:      lastAction.allin  || false,
+                folded:     lastAction.folded || false
+            });
+        }
 
-        // Only send HTTP error response if we haven't sent a success response yet
-        // (This prevents "Cannot set headers after they are sent" errors)
-        if (!res.headersSent) {
-            // Send error to player via socket
-            const playerId = req.user?.playerId;
-            if (playerId) {
-                const playerSocket = tableSocketManager.getSocket(playerId);
-                if (playerSocket) {
-                    gameSocketManager.sendError(playerSocket, 'Failed to process action', req.body.game_id, playerId);
+        const playerSocket = tableSocketManager.getSocket(playerId);
+        if (playerSocket) gameSocketManager.sendActionResponse(playerSocket, true, null, game_id, playerId);
+
+        res.json({ success: true, message: 'Action processed successfully' });
+
+        // ── Game Progression (after HTTP response) ───────────────────
+        try {
+            const fetchPlayersForBroadcast = async () => {
+                const [rows] = await db.execute(
+                    'SELECT player_id, username, seat_number, chip_balance, current_bet FROM players WHERE game_id = ? ORDER BY seat_number',
+                    [game_id]
+                );
+                return rows;
+            };
+
+            const buildBroadcastState = (playersRows, activePlayerId) => {
+                // Compute SB/BB seats relative to the dealer for badge display
+                const nonFoldedSeats = playersRows
+                    .filter(p => {
+                        const bet = gameState.bets.find(b => b.seat === p.seat_number);
+                        return !bet?.folded;
+                    })
+                    .map(p => p.seat_number)
+                    .sort((a, b) => a - b);
+
+                const dealerIdx = nonFoldedSeats.indexOf(gameState.dealer_seat);
+                const relIdx    = dealerIdx !== -1 ? dealerIdx : 0;
+                const sbSeat    = nonFoldedSeats[(relIdx + 1) % nonFoldedSeats.length];
+                const bbSeat    = nonFoldedSeats[(relIdx + 2) % nonFoldedSeats.length];
+
+                return {
+                    game_id, table_id: gameState.table_id,
+                    tableName:   gameRow.table_name,
+                    smallBlind:  gameRow.small_blind,
+                    bigBlind:    gameRow.big_blind,
+                    sbSeat, bbSeat,
+                    pot: gameState.pot, current_bet: gameState.current_bet,
+                    stage: gameState.stage, dealerSeat: gameState.dealer_seat,
+                    activePlayerId, community_cards: gameState.community_cards,
+                    players: playersRows.map(p => {
+                        const bet = gameState.bets.find(b => b.seat === p.seat_number) || {};
+                        return {
+                            player_id: p.player_id, username: p.username,
+                            seat_number: p.seat_number, chip_balance: p.chip_balance,
+                            current_bet: bet.bet_amount || 0,
+                            is_folded:  bet.folded || false,
+                            is_all_in:  bet.allin  || false,
+                            hole_cards: null
+                        };
+                    })
+                };
+            };
+
+            // FIX: proceedResult === 0 means stage advanced (flop/turn/river dealt).
+            //      proceedResult === 1 means betting continues in the same stage.
+            //      Previously sendStageProgression was called on === 1 (wrong).
+            if (proceedResult === 0) {
+                console.log(`${TAG} Stage advanced to ${gameState.stage} — broadcasting stage progression`);
+                gameSocketManager.sendStageProgression(gameState.table_id, {
+                    game_id, stage: gameState.stage, community_cards: gameState.community_cards
+                });
+            }
+
+            if (proceedResult === 0 || proceedResult === 1) {
+                const nextRequest = getNextRequest(gameState);
+                const [nextPlayerRows] = await db.execute(
+                    'SELECT player_id FROM players WHERE game_id = ? AND seat_number = ?',
+                    [game_id, nextRequest.seat]
+                );
+
+                if (nextPlayerRows.length > 0) {
+                    const nextPlayerId = nextPlayerRows[0].player_id;
+                    const nextSocket  = tableSocketManager.getSocket(nextPlayerId);
+
+                    if (nextSocket) {
+                        if (nextRequest.type === PackageType.SERVER_REQUEST_CALL) {
+                            gameSocketManager.requestCall(nextSocket, {
+                                game_id, player_id: nextPlayerId, seat: nextRequest.seat,
+                                min_raise: nextRequest.min_raise, to_call: nextRequest.to_call
+                            });
+                        } else {
+                            gameSocketManager.requestCheck(nextSocket, {
+                                game_id, player_id: nextPlayerId, seat: nextRequest.seat,
+                                min_raise: nextRequest.min_raise
+                            });
+                        }
+                        console.log(`${TAG} Sent ${nextRequest.type} to player ${nextPlayerId} at seat ${nextRequest.seat}`);
+                    } else {
+                        console.warn(`${TAG} Player ${nextPlayerId} (seat ${nextRequest.seat}) has no active socket`);
+                    }
+
+                    const playersForBroadcast = await fetchPlayersForBroadcast();
+                    gameSocketManager.sendGameState(
+                        gameState.table_id,
+                        buildBroadcastState(playersForBroadcast, nextPlayerRows[0].player_id)
+                    );
+                } else {
+                    console.error(`${TAG} No player found at next seat ${nextRequest.seat}`);
                 }
             }
 
+            if (proceedResult === -1) {
+                console.log(`${TAG} GAME OVER — determining winner`);
+
+                // FIX: If players went all-in before all community cards were dealt
+                //      (e.g. everyone all-in on the preflop), deal the remaining
+                //      community cards in memory before running the hand evaluator,
+                //      which requires exactly 5 cards.
+                if (gameState.community_cards.length < 5) {
+                    console.log(`${TAG} All-in showdown: only ${gameState.community_cards.length} community cards — dealing remainder`);
+                    dealAllRemainingCommunityCards(gameState);
+                    // Persist the final board and updated stage to DB
+                    await db.execute(
+                        'UPDATE gamestate SET community_cards = ?, stage = ?, deck = ? WHERE game_id = ?',
+                        [JSON.stringify(gameState.community_cards), gameState.stage, JSON.stringify(gameState.deck), game_id]
+                    );
+                    console.log(`${TAG} Board complete: [${gameState.community_cards.join(', ')}]`);
+                    // Broadcast the final board to all players
+                    gameSocketManager.sendStageProgression(gameState.table_id, {
+                        game_id, stage: gameState.stage, community_cards: gameState.community_cards
+                    });
+                }
+
+                const seatsInGame = gameState.bets.filter(b => !b.folded).map(b => b.seat);
+                if (seatsInGame.length === 0) throw new Error('No non-folded players for showdown');
+
+                // FIX: Use parameterised placeholders (no string interpolation of seat numbers)
+                const placeholders = seatsInGame.map(() => '?').join(',');
+                const [playerRows] = await db.execute(
+                    `SELECT player_id, hole_cards FROM players WHERE game_id = ? AND seat_number IN (${placeholders})`,
+                    [game_id, ...seatsInGame]
+                );
+
+                const playerCards = playerRows.map(row => {
+                    let holeCards;
+                    try {
+                        holeCards = typeof row.hole_cards === 'string'
+                            ? JSON.parse(row.hole_cards)
+                            : (Array.isArray(row.hole_cards) ? row.hole_cards : []);
+                    } catch {
+                        console.error(`${TAG} Failed to parse hole_cards for player ${row.player_id}:`, row.hole_cards);
+                        holeCards = [];
+                    }
+                    console.log(`${TAG} Showdown — player ${row.player_id}: [${holeCards.join(',')}]`);
+                    return { player_id: row.player_id, hole_cards: holeCards };
+                });
+
+                const winners = determineWinner(playerCards, gameState.community_cards);
+                console.log(`${TAG} Winners:`, winners.map(w => `player=${w.player_id} share=${w.share}`).join(' | '));
+
+                const primaryWinner = winners[0];
+                gameSocketManager.sendGameEnd(gameState.table_id, {
+                    game_id,
+                    winner_seat:  primaryWinner.seat || primaryWinner.player_id,
+                    winning_hand: primaryWinner.winning_hand || primaryWinner.hand || 'High Card',
+                    pot: gameState.pot
+                });
+
+                let remainingPot = gameState.pot;
+                for (let i = 0; i < winners.length; i++) {
+                    const amount = i === winners.length - 1
+                        ? remainingPot
+                        : Math.floor(gameState.pot * winners[i].share);
+                    remainingPot -= amount;
+                    await db.execute(
+                        'UPDATE players SET chip_balance = chip_balance + ? WHERE player_id = ?',
+                        [amount, winners[i].player_id]
+                    );
+                    console.log(`${TAG} Awarded ${amount} chips to player ${winners[i].player_id}`);
+                }
+
+                // FIX: Advance dealer seat using seated player list, not gameState.max_players
+                //      (max_players is reduced by folds/all-ins during the hand and is wrong here)
+                const [seatedPlayers] = await db.execute(
+                    'SELECT seat_number FROM players WHERE table_id = ? AND status = "active" ORDER BY seat_number',
+                    [gameState.table_id]
+                );
+                const seatNums = seatedPlayers.map(p => p.seat_number);
+                const nextDealerSeat = seatNums.find(s => s > gameState.dealer_seat) || seatNums[0] || gameState.dealer_seat;
+                await db.execute('UPDATE tables SET dealer_seat = ? WHERE table_id = ?', [nextDealerSeat, gameState.table_id]);
+                console.log(`${TAG} Dealer seat: ${gameState.dealer_seat} → ${nextDealerSeat}`);
+
+                gameSocketManager.sendGameEndedReturnToTable(gameState.table_id, {
+                    winners, pot: gameState.pot, message: 'Game ended — ready for a new round'
+                });
+            }
+
+        } catch (progressionError) {
+            console.error(`${TAG} Game progression error (HTTP already sent):`, progressionError);
+            const actingSocket = tableSocketManager.getSocket(playerId);
+            if (actingSocket) gameSocketManager.sendError(actingSocket, 'Server error during game progression', game_id, playerId);
+        }
+
+    } catch (error) {
+        console.error(`[GAME:action] Unhandled error:`, error);
+        if (!res.headersSent) {
+            const playerId = req.user?.playerId;
+            if (playerId) {
+                const sock = tableSocketManager.getSocket(playerId);
+                if (sock) gameSocketManager.sendError(sock, 'Failed to process action', req.body.game_id, playerId);
+            }
             res.status(500).json({ message: 'Failed to process player action' });
-        } else {
-            console.log('HTTP response already sent, not sending error response');
         }
     }
 });
